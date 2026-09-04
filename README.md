@@ -101,3 +101,60 @@ leak the rest of that game's context between train and val). Test is all of `MON
 `MONTH_A`. Comparing metrics on test vs. `test_unseen_players` (done in `evaluate.py`) directly
 measures how much of the model's performance comes from having seen a given player's tendencies
 before, versus generalising from board/clock/eval state alone.
+
+## Models and evaluation (`src/models.py`, `src/evaluate.py`)
+
+### No resampling
+
+Every model is trained on the natural class distribution -- no SMOTE, no undersampling, no
+oversampling. Blunders are genuinely rare (see Set 2's verification output), and resampling
+changes the base rate the model learns from, which distorts its predicted probabilities away
+from the true blunder frequency. Since the whole point of this project is a *calibrated*
+probability, not just a ranking, that trade-off isn't acceptable here -- a resampled model might
+score similarly on ranking metrics like PR-AUC while being badly miscalibrated.
+
+### Model ladder
+
+Fit in order, all reported side by side: base rate, Elo-only logistic, Elo+position logistic
+(`mover_elo`, `wp_before`, `legal_move_count`, `material_total`), full logistic on every feature
+(standardised, L2-penalised -- kept deliberately simple and linear so its coefficients stay
+interpretable for Set 6), and LightGBM on every feature. LightGBM's `num_leaves`,
+`min_child_samples`, and `learning_rate` are grid-searched (`LGB_PARAM_GRID` in `models.py`) with
+early stopping on validation PR-AUC via a custom `feval`; `n_estimators` isn't a separate grid
+dimension since early stopping already picks the effective number of trees per configuration.
+The grid is intentionally small -- this isn't a Kaggle leaderboard exercise, and `evaluate.py`
+reports whichever model wins honestly rather than searching until LightGBM comes out on top (see
+Verification in the code output).
+
+Rolling-history features are null for a mover's first tracked move in a game (see Set 3). The
+logistic models fill those with 0; LightGBM is left the native nulls, since it splits on
+missingness directly and doesn't need imputation.
+
+### Calibration
+
+Isotonic regression is fit on the validation set's LightGBM predictions and applied to the test
+set's LightGBM predictions (LightGBM is the most flexible model in the ladder, so it's the one
+whose calibration is most worth checking). Brier score is reported before and after, and the
+10-bin reliability curve for both is saved to `outputs/figures/calibration.png`.
+
+### Metrics
+
+Primary metric is PR-AUC, always reported alongside the base rate it's relative to (PR-AUC isn't
+comparable across datasets/splits with different base rates on its own). Also reported: ROC-AUC,
+Brier score, log loss, and lift in the top decile of predicted risk -- each computed on
+validation, the full test month, and `test_unseen_players` separately.
+
+### Threshold sensitivity
+
+The whole ladder is refit at blunder thresholds of 10/15/20/30 win-percentage points (recomputed
+from the already-stored continuous `wp_loss` column, no re-parsing needed). LightGBM uses a fixed
+default configuration for this table rather than re-running the grid search at every threshold,
+to keep the sweep's compute bounded. Results are in `outputs/tables/threshold_sensitivity.csv`;
+if any conclusion (e.g. which model wins) flips across thresholds, that's noted here once real
+numbers are in.
+
+### Output
+
+`outputs/tables/model_comparison.csv`, `outputs/tables/threshold_sensitivity.csv`,
+`outputs/figures/calibration.png`, `outputs/figures/pr_curve.png`, and pickled fitted models in
+`data/processed/model_{name}.pkl`.
