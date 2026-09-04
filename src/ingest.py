@@ -5,13 +5,21 @@ by year/month) for two temporally separated months, and write data/raw/games_{mo
 Strategy: [%eval] is a hard requirement and only ~6% of games carry it, so the movetext column
 must be decoded for every row in a month regardless -- that network cost is unavoidable. To pay
 it exactly once per month, pass 1 scans the remote parquet shards with a single WHERE (movetext
-contains '[%eval') and writes the survivors, plus boolean flags for every later filter step, to a
-local intermediate parquet. All sequential filter counts and the time-control bucket counts are
-then computed locally from that intermediate (fast, no network), and a second, narrow query slices
+contains '[%eval') and writes the survivors, plus boolean flags for every later filter step, to
+local intermediate parquet files. All sequential filter counts and the time-control bucket counts
+are then computed locally from those files (fast, no network), and a second, narrow query slices
 out the final columns for the chosen time-control pair.
+
+Pass 1 processes shards in small batches (rather than one glob covering the whole month) so
+progress is visible and a crash or a Hugging Face rate-limit stall only costs one batch, not the
+whole month: each batch is written to its own file and already-completed batches are skipped on
+a re-run.
 """
 
+import json
+import re
 import time
+import urllib.request
 from pathlib import Path
 
 import duckdb
@@ -29,6 +37,9 @@ MIN_BUCKET_GAMES = 15_000
 ELO_LO, ELO_HI = 800, 2600
 MIN_PLIES = 20
 
+BATCH_SIZE = 15
+BATCH_RETRIES = 3
+
 STEP_NAMES = [
     "movetext contains [%eval]",
     "movetext also contains [%clk]",
@@ -40,26 +51,27 @@ STEP_NAMES = [
 ]
 
 
-def month_glob(year: int, month: int) -> str:
-    import urllib.request
-    import json
-    import re
-
+def list_shards(year: int, month: int) -> list[str]:
     url = "https://huggingface.co/api/datasets/Lichess/standard-chess-games"
     with urllib.request.urlopen(url) as r:
         data = json.load(r)
     prefix = f"data/year={year}/month={month:02d}/train-"
-    shards = [s["rfilename"] for s in data["siblings"] if s["rfilename"].startswith(prefix)]
+    shards = sorted(s["rfilename"] for s in data["siblings"] if s["rfilename"].startswith(prefix))
     if not shards:
         raise ValueError(f"no shards found for {year}-{month:02d}")
-    m = re.search(r"-of-(\d+)\.parquet$", shards[0])
-    total = m.group(1)
+    return [f"{HF_BASE}/year={year}/month={month:02d}/{Path(s).name}" for s in shards]
+
+
+def month_glob(year: int, month: int) -> str:
+    shards = list_shards(year, month)
+    total = re.search(r"-of-(\d+)\.parquet$", shards[0]).group(1)
     return f"{HF_BASE}/year={year}/month={month:02d}/train-*-of-{total}.parquet"
 
 
 def connect() -> duckdb.DuckDBPyConnection:
-    # threads=8 and generous retries avoid HTTP 429 from HF; higher concurrency trips it
-    # even with an auth token.
+    # Benchmarked threads=4/8/16 head-to-head: 4 was uniformly slow (~59s/shard), 16 was
+    # fast but wildly inconsistent batch-to-batch (rate-limit backoff), 8 was both fast and
+    # the most consistent (~33.5s/shard).
     con = duckdb.connect()
     con.execute("INSTALL httpfs;")
     con.execute("LOAD httpfs;")
@@ -74,8 +86,10 @@ def total_scanned(con: duckdb.DuckDBPyConnection, glob: str) -> int:
     return con.execute(f"SELECT count(*) FROM read_parquet('{glob}')").fetchone()[0]
 
 
-def run_pass1(con: duckdb.DuckDBPyConnection, glob: str, out_path: Path) -> None:
+def run_pass1_batch(con: duckdb.DuckDBPyConnection, files: list[str], out_path: Path) -> None:
+    flist = "[" + ", ".join(f"'{f}'" for f in files) + "]"
     tc_list = ", ".join(f"'{tc}'" for tc in TC_CANDIDATES)
+    tmp_path = out_path.with_suffix(".tmp.parquet")
     query = f"""
     COPY (
         SELECT
@@ -99,15 +113,44 @@ def run_pass1(con: duckdb.DuckDBPyConnection, glob: str, out_path: Path) -> None
                 AND BlackElo BETWEEN {ELO_LO} AND {ELO_HI}) AS elo_ok,
             (Termination IN ('Normal', 'Time forfeit')) AS term_ok,
             (len(string_split(movetext, '[%clk')) - 1) AS ply_count
-        FROM read_parquet('{glob}')
+        FROM read_parquet({flist})
         WHERE contains(movetext, '[%eval')
-    ) TO '{out_path}' (FORMAT PARQUET);
+    ) TO '{tmp_path}' (FORMAT PARQUET);
     """
     con.execute(query)
+    tmp_path.replace(out_path)  # atomic-ish: a killed/crashed run never leaves a half-written batch
 
 
-def sequential_counts(con: duckdb.DuckDBPyConnection, intermediate_path: Path) -> list[int]:
-    src = f"read_parquet('{intermediate_path}')"
+def run_pass1(con: duckdb.DuckDBPyConnection, files: list[str], batch_dir: Path) -> Path:
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    batches = [files[i:i + BATCH_SIZE] for i in range(0, len(files), BATCH_SIZE)]
+    n_batches = len(batches)
+
+    for i, batch_files in enumerate(batches):
+        out_path = batch_dir / f"batch_{i:04d}.parquet"
+        if out_path.exists():
+            print(f"  batch {i + 1}/{n_batches}: already done, skipping", flush=True)
+            continue
+
+        t0 = time.time()
+        for attempt in range(1, BATCH_RETRIES + 1):
+            try:
+                run_pass1_batch(con, batch_files, out_path)
+                break
+            except Exception as e:
+                print(f"  batch {i + 1}/{n_batches}: attempt {attempt} failed ({e!r})", flush=True)
+                if attempt == BATCH_RETRIES:
+                    raise
+
+        rows = con.execute(f"SELECT count(*) FROM read_parquet('{out_path}')").fetchone()[0]
+        print(f"  batch {i + 1}/{n_batches}: {len(batch_files)} shards, {rows:,} rows, "
+              f"{time.time() - t0:.0f}s", flush=True)
+
+    return batch_dir
+
+
+def sequential_counts(con: duckdb.DuckDBPyConnection, batch_dir: Path) -> list[int]:
+    src = f"read_parquet('{batch_dir}/*.parquet')"
     counts = []
     counts.append(con.execute(f"SELECT count(*) FROM {src}").fetchone()[0])  # eval_ok (WHERE already applied)
     counts.append(con.execute(f"SELECT count(*) FROM {src} WHERE clk_ok").fetchone()[0])
@@ -126,8 +169,8 @@ def sequential_counts(con: duckdb.DuckDBPyConnection, intermediate_path: Path) -
     return counts
 
 
-def bucket_counts(con: duckdb.DuckDBPyConnection, intermediate_path: Path) -> dict[str, int]:
-    src = f"read_parquet('{intermediate_path}')"
+def bucket_counts(con: duckdb.DuckDBPyConnection, batch_dir: Path) -> dict[str, int]:
+    src = f"read_parquet('{batch_dir}/*.parquet')"
     rows = con.execute(f"""
         SELECT time_control, count(*) FROM {src}
         WHERE clk_ok AND tc_candidate_ok AND bot_ok AND elo_ok AND term_ok AND ply_count >= {MIN_PLIES}
@@ -149,9 +192,9 @@ def choose_tc_pair(bucket_a: dict[str, int], bucket_b: dict[str, int]) -> tuple[
     return TC_PAIRS[-1]
 
 
-def write_final(con: duckdb.DuckDBPyConnection, intermediate_path: Path, chosen_pair: tuple[str, str],
+def write_final(con: duckdb.DuckDBPyConnection, batch_dir: Path, chosen_pair: tuple[str, str],
                  out_path: Path) -> None:
-    src = f"read_parquet('{intermediate_path}')"
+    src = f"read_parquet('{batch_dir}/*.parquet')"
     lo, hi = chosen_pair
     con.execute(f"""
         COPY (
@@ -166,19 +209,22 @@ def write_final(con: duckdb.DuckDBPyConnection, intermediate_path: Path, chosen_
 
 def process_month(con: duckdb.DuckDBPyConnection, year: int, month: int) -> dict:
     label = f"{year}-{month:02d}"
+    print(f"\n=== {label} ===", flush=True)
+
+    files = list_shards(year, month)
+    print(f"{len(files)} shards found", flush=True)
+
+    t0 = time.time()
     glob = month_glob(year, month)
-    print(f"\n=== {label} ===")
-
-    t0 = time.time()
     scanned = total_scanned(con, glob)
-    print(f"total games scanned: {scanned:,}  ({time.time() - t0:.0f}s)")
+    print(f"total games scanned: {scanned:,}  ({time.time() - t0:.0f}s)", flush=True)
 
-    intermediate = RAW_DIR / f"_intermediate_{label}.parquet"
+    batch_dir = RAW_DIR / f"_batches_{label}"
     t0 = time.time()
-    run_pass1(con, glob, intermediate)
-    print(f"pass 1 (eval-filter + flags) written to {intermediate.name}  ({time.time() - t0:.0f}s)")
+    run_pass1(con, files, batch_dir)
+    print(f"pass 1 (eval-filter + flags) complete  ({time.time() - t0:.0f}s)", flush=True)
 
-    counts = sequential_counts(con, intermediate)
+    counts = sequential_counts(con, batch_dir)
     print("survivors by filter step:")
     running = scanned
     for name, c in zip(STEP_NAMES, counts):
@@ -186,13 +232,13 @@ def process_month(con: duckdb.DuckDBPyConnection, year: int, month: int) -> dict
         running = c
     print(f"final count (all filters, any candidate TimeControl): {counts[-1]:,}")
 
-    buckets = bucket_counts(con, intermediate)
+    buckets = bucket_counts(con, batch_dir)
     print("candidate TimeControl bucket counts (post all other filters):")
     for lo, hi in TC_PAIRS:
         print(f"  {lo}: {buckets.get(lo, 0):,}   {hi}: {buckets.get(hi, 0):,}")
 
     return {"label": label, "scanned": scanned, "counts": counts, "buckets": buckets,
-            "intermediate": intermediate}
+            "batch_dir": batch_dir}
 
 
 def main() -> None:
@@ -207,7 +253,7 @@ def main() -> None:
 
     for result in (result_a, result_b):
         out_path = RAW_DIR / f"games_{result['label']}.parquet"
-        write_final(con, result["intermediate"], chosen_pair, out_path)
+        write_final(con, result["batch_dir"], chosen_pair, out_path)
         n = con.execute(f"SELECT count(*) FROM read_parquet('{out_path}')").fetchone()[0]
         print(f"\n{result['label']}: wrote {n:,} games to {out_path}")
 
@@ -217,7 +263,9 @@ def main() -> None:
         for i, (mv,) in enumerate(samples):
             print(f"  sample {i}: {mv[:400]}")
 
-        result["intermediate"].unlink()
+        for f in result["batch_dir"].glob("*.parquet"):
+            f.unlink()
+        result["batch_dir"].rmdir()
 
 
 if __name__ == "__main__":
