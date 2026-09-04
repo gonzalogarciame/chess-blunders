@@ -53,3 +53,22 @@ are printed for both months.
 A Hugging Face access token is required (set `HF_TOKEN` in the environment before running) --
 anonymous requests to the dataset get rate-limited (HTTP 429) once DuckDB opens more than a
 handful of concurrent shard connections, which happens quickly at ~400 shards/month.
+
+## Move-level parsing and labelling (`src/parse.py`)
+
+Each game is replayed with `python-chess` into one row per ply (move exclusions in the code
+docstring). The annotation comment attached to the move played at ply `t` describes the position
+*after* that move, so for the row at ply `t`: `eval_after` is the eval on ply `t`, `eval_before` is
+the eval on ply `t-1`. Clocks only change on their own side's move, so the mover's clock before
+their move is their own last update, on ply `t-2`, not `t-1` (that's the opponent's clock).
+
+Evals are converted from centipawns to win probability with the Lichess formula before
+thresholding, from the mover's point of view. This has a useful side effect worth calling out: the
+sigmoid saturates near 0 and 100, so a position that is already close to lost or won can barely
+move win probability further even on a large centipawn swing -- meaningful `wp_loss` is only
+possible in positions that are still contested. That's the correct behaviour for a blunder metric
+(a move that seals an already-decided game shouldn't count the same as one that throws away a
+level position), and it means no separate "skip lost positions" rule is needed.
+
+`blunder = wp_loss >= 20` by default; `wp_loss` itself is stored as a continuous column so Set 4
+can re-threshold at 10/15/20/30 without re-parsing.
