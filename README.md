@@ -72,3 +72,32 @@ level position), and it means no separate "skip lost positions" rule is needed.
 
 `blunder = wp_loss >= 20` by default; `wp_loss` itself is stored as a continuous column so Set 4
 can re-threshold at 10/15/20/30 without re-parsing.
+
+## Features and splits (`src/features.py`, `src/splits.py`)
+
+### Leakage rules
+
+Every feature must be computable strictly *before* the move is played:
+
+- No feature may use `eval_after`, `cp_after`, `wp_after`, or `wp_loss` -- these describe the
+  position after the move, which requires already knowing what was played.
+- No feature may use the game `result` or `termination`.
+- No feature may use aggregate game statistics (e.g. total accuracy, total blunder count) --
+  those are only known once the whole game is over.
+- Rolling features (`wp_volatility_3`, `wp_swing_last`, `time_spent_prev`) may only look
+  backwards at prior plies of the same game; the current ply's own after-values are never
+  part of the window.
+
+`features.py` asserts `BANNED_COLUMNS.isdisjoint(FEATURE_COLUMNS)` at build time and prints the
+result, rather than relying on code review to catch a leaked column.
+
+### Splits (`src/splits.py`)
+
+Train/val are both drawn from `MONTH_A`, split 80/20 by a hash of `game_id` -- never by
+individual move, since moves within one game are heavily correlated (splitting by move would
+leak the rest of that game's context between train and val). Test is all of `MONTH_B`.
+
+`test_unseen_players` is the subset of test whose mover never appears (as a mover) anywhere in
+`MONTH_A`. Comparing metrics on test vs. `test_unseen_players` (done in `evaluate.py`) directly
+measures how much of the model's performance comes from having seen a given player's tendencies
+before, versus generalising from board/clock/eval state alone.
