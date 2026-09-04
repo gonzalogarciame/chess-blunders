@@ -158,3 +158,99 @@ numbers are in.
 `outputs/tables/model_comparison.csv`, `outputs/tables/threshold_sensitivity.csv`,
 `outputs/figures/calibration.png`, `outputs/figures/pr_curve.png`, and pickled fitted models in
 `data/processed/model_{name}.pkl`.
+
+## Increment as a natural experiment (`src/causal.py`)
+
+Everything so far is predictive, not causal -- LightGBM being good at ranking blunder risk from
+clock state says nothing about whether *more time* actually prevents blunders, since players who
+choose fast time controls likely differ from players who choose slow ones in ways that also
+affect blunder rate. Increment offers a cleaner design: within a matched pair (same base time,
+different increment -- the same pairing `ingest.py` used to pick the dataset's time control),
+increment is fixed before the game starts and can't respond to any specific position, and its
+effect on the clock only compounds as the game goes on. That gives a
+difference-in-differences (DiD) structure:
+
+- unit: player-game
+- treatment: `increment > 0`
+- "time": ply bucket (`9-20`, `21-40`, `41-60`, `61+`)
+- outcome: blunder rate within that player-game's moves in that bucket
+
+The regression is `blunder_rate ~ treatment * ply_bucket` with **player** fixed effects (not
+player-game), so a switcher's own games still vary in treatment status and the treatment main
+effect stays identified rather than being absorbed. Fixed effects are implemented by demeaning
+(the within estimator) rather than a dummy per player, since the player count makes a dummy
+design matrix impractical; standard errors are cluster-robust by player. Caveat: plain OLS on
+demeaned data doesn't reduce residual degrees of freedom for the number of player means
+absorbed, so reported SEs are a close approximation rather than textbook-exact -- acceptable
+here since player-clustering is what matters most for validity, and that part is done properly.
+
+Sample is restricted to **switchers**: players who appear in both increment groups (pooling both
+months). This removes the selection problem of who chooses which time control -- every
+comparison is within-player.
+
+### Required checks
+
+- **Parallel trends**: the earliest ply bucket's blunder rate should be similar across increment
+  groups, since the clocks have barely diverged yet. Plotted in
+  `outputs/figures/parallel_trends.png`. If the lines start apart, the design is compromised and
+  that gets said plainly in the code's printed output, not smoothed over.
+- **Placebo**: the treatment x ply_bucket interaction is zero by construction in the omitted
+  (earliest) bucket; `causal.py` additionally confirms this empirically by printing the raw,
+  non-regression gap between groups in that bucket.
+- **Balance table**: mean/SD of mover Elo, opponent Elo, and game length (max observed `ply` in
+  the retained move rows -- a lower bound on true game length, since Set 2 drops some plies)
+  across increment groups, restricted to the switcher sample, in
+  `outputs/tables/increment_balance.csv`.
+
+### Output
+
+`outputs/tables/increment_balance.csv`, `outputs/tables/increment_did_results.csv`,
+`outputs/tables/increment_sensitivity.csv`, `outputs/figures/parallel_trends.png`.
+
+## Sensitivity analysis
+
+### E-value
+
+`causal.py` reports an [E-value](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5771830/) (VanderWeele
+& Ding, 2017) for the total treatment effect in the latest ply bucket (main effect + interaction
+-- the bucket where the design predicts the compounding effect is largest). The linear-probability
+effect is converted to an approximate risk ratio using the control group's raw blunder rate in that
+bucket as the reference risk, and the E-value is reported for both the point estimate and the
+confidence interval bound closest to the null. It answers one specific question: how strongly would
+an unmeasured confounder need to be associated with *both* increment and blunder risk, above and
+beyond player fixed effects, to fully explain away the estimate?
+
+### What would make this credible, and why my data doesn't get me there
+
+Player fixed effects and the switcher restriction rule out one specific, narrow kind of
+confounding: stable differences between people who always play with increment and people who
+never do. They rule out nothing else. Three residual threats keep this from being a credible
+causal estimate on their own:
+
+**Unobserved position difficulty within a ply bucket.** A ply bucket only fixes how far into the
+game a move is, not how sharp, forcing, or theoretically well-trodden the resulting position is.
+If increment and non-increment games systematically differ in the kinds of positions reached at a
+given depth -- say, because faster time controls encourage different opening choices, or more
+forcing tactical middlegames -- the DiD estimate is partly picking up position difficulty, not
+time pressure, and ply bucket does nothing to separate the two.
+
+**Differential opponent behaviour under increment.** The design treats the opponent as a fixed
+part of the environment, but opponents are not blind to the time control. A player facing someone
+with increment may play more patiently, or be more willing to grind out a long ending, than a
+player who knows both clocks are about to run out. That shift in opponent behaviour is itself a
+function of increment and is folded into the outcome without being separately identified from the
+mover's own time pressure.
+
+**Switchers may choose increment based on how they expect to play that day.** This is the most
+serious one. Player fixed effects remove stable, between-player selection; they cannot remove
+day-to-day, within-player selection. A player who feels sharp, rested, or focused might be more
+likely to pick a faster time control precisely because they expect to need less thinking time that
+day -- inducing a spurious link between increment and blunder rate that has nothing to do with the
+clock itself, and that no amount of player-level fixed effects can absorb.
+
+The E-value puts a number on how strong a confounder matching any of these three stories would
+need to be to erase the estimate. A risk ratio in the 2-3 range is not an exotic magnitude for
+something like within-player day-to-day form or a systematic difference in position sharpness --
+it's entirely plausible that any one of the three threats above clears that bar on its own. This
+result is best read as suggestive of a real time-pressure effect on blunder rate, not as a
+demonstrated one, and that gap is the honest conclusion of this section.
