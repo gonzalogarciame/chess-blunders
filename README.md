@@ -26,7 +26,8 @@ A game is kept only if, in order:
 3. `TimeControl` falls in one of the candidate increment-pair buckets.
 4. Neither player is a `BOT`.
 5. Both `WhiteElo` and `BlackElo` are present and in `[800, 2600]`.
-6. `Termination == "Normal"` (drops abandoned games; keeps time forfeits).
+6. `Termination` is `"Normal"` or `"Time forfeit"` (drops abandoned/rules-infraction games; keeps
+   time forfeits, since Set 2 needs them for the "final move of a game lost on time" exclusion).
 7. At least 20 plies (approximated by counting `[%clk` occurrences in `movetext`, since every
    annotated ply carries exactly one clock comment once step 2 has passed).
 

@@ -35,7 +35,7 @@ STEP_NAMES = [
     "TimeControl in a candidate bucket",
     "neither player is a BOT",
     "both Elo present, 800-2600",
-    "Termination == Normal",
+    "Termination is Normal or Time forfeit",
     f"at least {MIN_PLIES} plies",
 ]
 
@@ -58,10 +58,15 @@ def month_glob(year: int, month: int) -> str:
 
 
 def connect() -> duckdb.DuckDBPyConnection:
+    # threads=8 and generous retries avoid HTTP 429 from HF; higher concurrency trips it
+    # even with an auth token.
     con = duckdb.connect()
     con.execute("INSTALL httpfs;")
     con.execute("LOAD httpfs;")
-    con.execute("SET threads=16;")
+    con.execute("SET threads=8;")
+    con.execute("SET http_retries=10;")
+    con.execute("SET http_retry_wait_ms=2000;")
+    con.execute("SET http_retry_backoff=2;")
     return con
 
 
@@ -74,7 +79,7 @@ def run_pass1(con: duckdb.DuckDBPyConnection, glob: str, out_path: Path) -> None
     query = f"""
     COPY (
         SELECT
-            element_at(string_split(Site, '/'), -1) AS game_id,
+            string_split(Site, '/')[-1] AS game_id,
             White AS white,
             Black AS black,
             WhiteElo AS white_elo,
@@ -92,7 +97,7 @@ def run_pass1(con: duckdb.DuckDBPyConnection, glob: str, out_path: Path) -> None
             (WhiteElo IS NOT NULL AND BlackElo IS NOT NULL
                 AND WhiteElo BETWEEN {ELO_LO} AND {ELO_HI}
                 AND BlackElo BETWEEN {ELO_LO} AND {ELO_HI}) AS elo_ok,
-            (Termination = 'Normal') AS term_ok,
+            (Termination IN ('Normal', 'Time forfeit')) AS term_ok,
             (len(string_split(movetext, '[%clk')) - 1) AS ply_count
         FROM read_parquet('{glob}')
         WHERE contains(movetext, '[%eval')
