@@ -254,3 +254,36 @@ something like within-player day-to-day form or a systematic difference in posit
 it's entirely plausible that any one of the three threats above clears that bar on its own. This
 result is best read as suggestive of a real time-pressure effect on blunder rate, not as a
 demonstrated one, and that gap is the honest conclusion of this section.
+
+## Player report (`src/report.py`)
+
+For any username with at least 200 moves in `data/processed/test.parquet` (deliberately
+test-only, all of `MONTH_B`: the model was trained on `MONTH_A`, so every row here is
+out-of-sample for it regardless of whether the player also appears in `MONTH_A`, which is what
+makes their individual calibration check meaningful rather than circular), `report.py` produces
+one figure with four panels:
+
+1. **Blunder rate by clock decile** against a baseline of every other player in the same
+   100-Elo-point band, using decile edges drawn from the baseline's own clock distribution so
+   both curves are binned identically.
+2. **Individual calibration**: this player's moves scored by the fitted LightGBM model, binned by
+   predicted probability, predicted vs. observed -- the same kind of reliability check as Set 4's
+   calibration, but for one person instead of the whole test set.
+3. **Time allocation profile**: mean seconds spent per move by ply bucket, against the same
+   rating-matched baseline.
+4. **A counterfactual**, printed as text on the figure: applying the Step 5 middlegame DiD
+   estimate, what happens to this player's expected middlegame blunder count if they shifted 20%
+   of their opening time into the middlegame. The conversion from the DiD's blunder-rate effect to
+   a per-second rate uses the empirical extra seconds-per-move increment buys in that bucket
+   (`causal.py`'s pickled `bucket_time_diff`) as the bridge. This rests on three assumptions,
+   stated in the code and worth repeating here: the increment effect is treated as scaling
+   linearly with seconds available (an extrapolation -- the original estimate came from a fixed
+   per-move bonus compounding over a whole game, not a one-off reallocation), reducing opening
+   time is assumed not to raise opening blunder risk (justified by the placebo/parallel-trends
+   result: clock differences haven't yet mattered that early), and the player's own move counts
+   per bucket are held fixed. If the empirical seconds-per-move gap in the middlegame bucket is
+   too small (< 1 second) to divide by reliably, the counterfactual is reported as unavailable
+   for that player rather than as a number that looks precise but isn't.
+
+Run with `python src/report.py <username>`. Output: `outputs/figures/player_report_{username}.png`
+plus the four panels' underlying tables printed to the console.

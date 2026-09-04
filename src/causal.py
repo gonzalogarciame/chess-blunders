@@ -25,6 +25,7 @@ acceptable here since cluster-robust SEs (by player) are the thing that matters 
 validity, and those are computed properly.
 """
 
+import pickle
 from pathlib import Path
 
 import matplotlib
@@ -115,6 +116,17 @@ def placebo_check(raw_means: pd.DataFrame) -> float:
         print(f"  gap is within {PARALLEL_TRENDS_TOLERANCE:.2f} of zero, consistent with parallel "
               f"trends holding before the clocks have had time to diverge.")
     return diff
+
+
+def bucket_time_diff(df: pd.DataFrame, switcher_movers: pd.Series) -> pd.DataFrame:
+    """Mean seconds spent per move, by treatment and ply bucket, restricted to switchers --
+    the empirical "extra seconds increment buys you" in each bucket. Used by report.py to
+    translate the DiD's per-bucket blunder-rate effect into a per-second rate for its
+    counterfactual (see README)."""
+    sub = df[df["mover"].isin(switcher_movers)].copy()
+    sub["time_spent"] = sub["clock_before"] - sub["clock_after"] + sub["increment"]
+    return sub.groupby(["ply_bucket", "treatment"], observed=True)["time_spent"] \
+        .mean().unstack("treatment").reindex(PLY_BUCKET_LABELS)
 
 
 def within_transform(X: pd.DataFrame, groups: pd.Series) -> pd.DataFrame:
@@ -229,6 +241,13 @@ def main() -> None:
     sensitivity = sensitivity_analysis(result, raw_means)
     pd.DataFrame([sensitivity]).to_csv(TABLES_DIR / "increment_sensitivity.csv", index=False)
     print(f"wrote {TABLES_DIR / 'increment_sensitivity.csv'}")
+
+    time_diff = bucket_time_diff(df, switcher_panel["mover"])
+    artifacts = {"did_result": result, "bucket_time_diff": time_diff}
+    artifacts_path = PROCESSED_DIR / "causal_did_artifacts.pkl"
+    with open(artifacts_path, "wb") as f:
+        pickle.dump(artifacts, f)
+    print(f"wrote {artifacts_path}")
 
 
 if __name__ == "__main__":
