@@ -153,10 +153,21 @@ to keep the sweep's compute bounded. Results are in `outputs/tables/threshold_se
 if any conclusion (e.g. which model wins) flips across thresholds, that's noted here once real
 numbers are in.
 
+### Error analysis: slice heatmap
+
+`evaluate.py` also slices the LightGBM model's calibration gap (mean predicted probability minus
+actual blunder rate) by mover Elo band x ply bucket, the two dimensions most likely to expose
+where the model over- or under-estimates risk, since both change how much signal is actually
+available (e.g. a weak player in the opening vs. a strong player deep in an endgame). Saved to
+`outputs/tables/slice_heatmap.csv` / `outputs/figures/slice_heatmap.png`. The two paragraphs of
+failure-mode analysis this is meant to support get written once the heatmap reflects real data --
+speculating about specific failure modes from a synthetic validation run would just be fiction.
+
 ### Output
 
 `outputs/tables/model_comparison.csv`, `outputs/tables/threshold_sensitivity.csv`,
-`outputs/figures/calibration.png`, `outputs/figures/pr_curve.png`, and pickled fitted models in
+`outputs/tables/slice_heatmap.csv`, `outputs/figures/calibration.png`,
+`outputs/figures/pr_curve.png`, `outputs/figures/slice_heatmap.png`, and pickled fitted models in
 `data/processed/model_{name}.pkl`.
 
 ## Increment as a natural experiment (`src/causal.py`)
@@ -202,10 +213,29 @@ comparison is within-player.
   across increment groups, restricted to the switcher sample, in
   `outputs/tables/increment_balance.csv`.
 
+### DAG and estimate trajectory
+
+`outputs/figures/causal_dag.png` is a conceptual diagram (not computed from data) of the assumed
+path -- increment to clock time to blunder -- alongside the three residual threats named below,
+each drawn as an unresolved dashed arrow into the outcome (and, for day-to-day form, into
+treatment itself, since it's a selection story). Stable between-player skill is the one confound
+player fixed effects do handle, so it's noted in a caption rather than drawn as another arrow.
+
+`outputs/figures/estimate_trajectory.png` / `outputs/tables/estimate_trajectory.csv` show the
+increment estimate at three points of increasing rigor: (1) a naive raw comparison across every
+player, no adjustment; (2) player fixed effects restricted to switchers, but pooled across ply
+buckets (removes selection, still assumes a constant effect over the whole game); (3) the full
+DiD, effect in the latest bucket. If (1) and (2) land close together and (3) is larger, that's
+this project's evidence that averaging over the whole game dilutes a real, compounding effect
+rather than that the effect doesn't exist -- and if they don't land that way, this is where that
+gets said.
+
 ### Output
 
 `outputs/tables/increment_balance.csv`, `outputs/tables/increment_did_results.csv`,
-`outputs/tables/increment_sensitivity.csv`, `outputs/figures/parallel_trends.png`.
+`outputs/tables/increment_sensitivity.csv`, `outputs/tables/estimate_trajectory.csv`,
+`outputs/figures/parallel_trends.png`, `outputs/figures/estimate_trajectory.png`,
+`outputs/figures/causal_dag.png`.
 
 ## Sensitivity analysis
 

@@ -150,6 +150,127 @@ def fit_did(panel: pd.DataFrame):
     return model.fit(cov_type="cluster", cov_kwds={"groups": df["mover"]})
 
 
+def naive_estimate(df: pd.DataFrame) -> dict:
+    """Step 1 of the trajectory: raw move-level blunder rate, treatment minus control, across
+    every player (switchers and non-switchers alike) -- no adjustment for who selects into
+    which time control at all."""
+    g = df.groupby("treatment")["blunder"]
+    means, ns, vars_ = g.mean(), g.count(), g.var()
+    diff = float(means[True] - means[False])
+    se = float(np.sqrt(vars_[True] / ns[True] + vars_[False] / ns[False]))
+    return {"step": "1. naive (raw, all players)", "estimate": diff, "se": se}
+
+
+def fe_pooled_estimate(switcher_panel: pd.DataFrame) -> dict:
+    """Step 2: player fixed effects, switchers only, but pooled across ply buckets (no time
+    interaction) -- removes between-player selection but still assumes the effect is constant
+    over the whole game rather than compounding."""
+    df = switcher_panel.copy()
+    df["treatment"] = df["treatment"].astype(float)
+    X = df[["treatment"]]
+    y = df["blunder_rate"]
+    X_within = within_transform(X, df["mover"])
+    y_within = y - y.groupby(df["mover"]).transform("mean")
+    result = sm.OLS(y_within, X_within).fit(cov_type="cluster", cov_kwds={"groups": df["mover"]})
+    return {"step": "2. player FE, switchers, no time interaction",
+            "estimate": float(result.params["treatment"]), "se": float(result.bse["treatment"])}
+
+
+def full_did_estimate(did_result) -> dict:
+    """Step 3: the full DiD -- treatment effect in the latest ply bucket (main effect +
+    interaction), where the design predicts the compounding effect is largest."""
+    last_bucket = PLY_BUCKET_LABELS[-1]
+    names = list(did_result.params.index)
+    contrast = np.zeros(len(names))
+    contrast[names.index("treatment")] = 1.0
+    contrast[names.index(f"treat_x_bucket_{last_bucket}")] = 1.0
+    point = float(contrast @ did_result.params.values)
+    se = float(np.sqrt(contrast @ did_result.cov_params().values @ contrast))
+    return {"step": f"3. full DiD, switchers, player FE x ply bucket ({last_bucket})",
+            "estimate": point, "se": se}
+
+
+def estimate_trajectory(df: pd.DataFrame, switcher_panel: pd.DataFrame, did_result) -> pd.DataFrame:
+    return pd.DataFrame([
+        naive_estimate(df),
+        fe_pooled_estimate(switcher_panel),
+        full_did_estimate(did_result),
+    ])
+
+
+def plot_trajectory(traj: pd.DataFrame, out_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(8, 5))
+    x = np.arange(len(traj))
+    ax.errorbar(x, traj["estimate"], yerr=1.96 * traj["se"], fmt="o-", capsize=5, color="tab:blue")
+    ax.axhline(0, linestyle="--", color="gray")
+    ax.set_xticks(x)
+    ax.set_xticklabels(traj["step"], rotation=15, ha="right")
+    ax.set_ylabel("estimated treatment effect on blunder rate")
+    ax.set_title("Estimate trajectory: naive -> fixed effects -> full DiD")
+    fig.tight_layout()
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_dag(out_path: Path) -> None:
+    """A conceptual DAG, not computed from data: the assumed causal path (solid) and the three
+    residual threats named in the README's honest-limitations paragraph (dashed) that player
+    fixed effects and the switcher restriction do not rule out. Stable, between-player skill
+    differences are the one confound player FE does handle -- noted as a caption rather than a
+    graph node, since drawing it would need long arrows crossing the whole diagram for a point
+    that's the *absence* of a threat, not a residual one."""
+    fig, ax = plt.subplots(figsize=(11, 7.5))
+    ax.set_xlim(0, 11)
+    ax.set_ylim(0, 8)
+    ax.axis("off")
+
+    box_w, box_h = 2.0, 1.1
+    nodes = {
+        "increment": (1.5, 4.0, "Increment\n(treatment)"),
+        "clock": (5.5, 4.0, "Clock time /\ntime pressure"),
+        "blunder": (9.5, 4.0, "Blunder"),
+        "form": (1.5, 7.0, "Day-to-day form\n/ mood"),
+        "position": (5.5, 1.7, "Position difficulty\nwithin ply bucket"),
+        "opponent": (9.5, 1.7, "Opponent\nbehaviour"),
+    }
+    for x, y, label in nodes.values():
+        ax.add_patch(plt.Rectangle((x - box_w / 2, y - box_h / 2), box_w, box_h, fill=True,
+                                    facecolor="white", edgecolor="black", zorder=2))
+        ax.text(x, y, label, ha="center", va="center", fontsize=9.5, zorder=3)
+
+    def arrow(a, b, style="solid", color="black", rad=0.0):
+        (x1, y1, _), (x2, y2, _) = nodes[a], nodes[b]
+        ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
+                    arrowprops=dict(arrowstyle="->", linestyle=style, color=color, lw=1.6,
+                                     shrinkA=32, shrinkB=32, connectionstyle=f"arc3,rad={rad}"))
+
+    # assumed causal path (the thing the DiD tries to estimate)
+    arrow("increment", "clock", "solid")
+    arrow("clock", "blunder", "solid")
+
+    # residual threats named in the README -- each fans straight into the path, no crossing
+    arrow("form", "increment", "dashed", "tab:red")           # self-selection into time control
+    arrow("form", "blunder", "dashed", "tab:red", rad=-0.25)  # direct confound, arcs above "clock"
+    arrow("position", "blunder", "dashed", "tab:red")         # unobserved within ply bucket
+    arrow("opponent", "blunder", "dashed", "tab:red")
+
+    ax.plot([], [], color="black", linestyle="solid", label="assumed causal path")
+    ax.plot([], [], color="tab:red", linestyle="dashed", label="residual threat (not resolved)")
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.14), ncol=2, fontsize=9.5, frameon=False)
+    ax.set_title("Assumed causal structure and residual confounding")
+    ax.text(0.5, -0.03,
+            "Stable, between-player skill differences are the one confound player fixed\n"
+            "effects do control for -- not shown, since it's handled rather than residual.",
+            transform=ax.transAxes, ha="center", va="top", fontsize=8.5, style="italic",
+            color="dimgray")
+
+    fig.tight_layout()
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def e_value(risk_ratio: float) -> float:
     """VanderWeele & Ding (2017): the minimum risk-ratio association an unmeasured confounder
     would need with *both* treatment and outcome, above and beyond measured covariates, to
@@ -248,6 +369,15 @@ def main() -> None:
     with open(artifacts_path, "wb") as f:
         pickle.dump(artifacts, f)
     print(f"wrote {artifacts_path}")
+
+    traj = estimate_trajectory(df, switcher_panel, result)
+    traj.to_csv(TABLES_DIR / "estimate_trajectory.csv", index=False)
+    plot_trajectory(traj, FIGURES_DIR / "estimate_trajectory.png")
+    print(f"\nestimate trajectory:\n{traj.to_string(index=False)}")
+    print(f"wrote {TABLES_DIR / 'estimate_trajectory.csv'} and {FIGURES_DIR / 'estimate_trajectory.png'}")
+
+    plot_dag(FIGURES_DIR / "causal_dag.png")
+    print(f"wrote {FIGURES_DIR / 'causal_dag.png'}")
 
 
 if __name__ == "__main__":

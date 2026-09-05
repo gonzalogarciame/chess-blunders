@@ -18,6 +18,7 @@ a re-run.
 
 import json
 import re
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -39,6 +40,11 @@ MIN_PLIES = 20
 
 BATCH_SIZE = 15
 BATCH_RETRIES = 3
+# con.interrupt() is cooperative, not preemptive: it can't break out of a single slow-but-still-
+# retrying network call, only stop the query between steps. So this timeout can't reliably catch
+# "slow" (observed up to ~2345s under real rate-limit-driven retries) -- it's here specifically
+# for "truly dead" (e.g. the system-sleep scenario, which hung for ~10 hours with zero progress).
+BATCH_TIMEOUT_S = 3600
 
 STEP_NAMES = [
     "movetext contains [%eval]",
@@ -121,7 +127,33 @@ def run_pass1_batch(con: duckdb.DuckDBPyConnection, files: list[str], out_path: 
     tmp_path.replace(out_path)  # atomic-ish: a killed/crashed run never leaves a half-written batch
 
 
-def run_pass1(con: duckdb.DuckDBPyConnection, files: list[str], batch_dir: Path) -> Path:
+def run_pass1_batch_with_timeout(files: list[str], out_path: Path, timeout_s: int) -> None:
+    """Runs one batch on its own fresh connection, in a thread, so a hung connection (dead
+    socket after e.g. a system sleep, or a stalled HTTP read that duckdb's own retries don't
+    catch) can be interrupted and abandoned instead of blocking forever. A fresh connection per
+    batch means an interrupted/poisoned connection never carries over to the next attempt."""
+    con = connect()
+    outcome: dict = {}
+
+    def target():
+        try:
+            run_pass1_batch(con, files, out_path)
+        except Exception as e:
+            outcome["error"] = e
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        con.interrupt()
+        thread.join(30)
+        raise TimeoutError(f"batch exceeded {timeout_s}s and was interrupted")
+    con.close()
+    if "error" in outcome:
+        raise outcome["error"]
+
+
+def run_pass1(files: list[str], batch_dir: Path) -> Path:
     batch_dir.mkdir(parents=True, exist_ok=True)
     batches = [files[i:i + BATCH_SIZE] for i in range(0, len(files), BATCH_SIZE)]
     n_batches = len(batches)
@@ -135,14 +167,16 @@ def run_pass1(con: duckdb.DuckDBPyConnection, files: list[str], batch_dir: Path)
         t0 = time.time()
         for attempt in range(1, BATCH_RETRIES + 1):
             try:
-                run_pass1_batch(con, batch_files, out_path)
+                run_pass1_batch_with_timeout(batch_files, out_path, BATCH_TIMEOUT_S)
                 break
             except Exception as e:
                 print(f"  batch {i + 1}/{n_batches}: attempt {attempt} failed ({e!r})", flush=True)
                 if attempt == BATCH_RETRIES:
                     raise
 
-        rows = con.execute(f"SELECT count(*) FROM read_parquet('{out_path}')").fetchone()[0]
+        count_con = connect()
+        rows = count_con.execute(f"SELECT count(*) FROM read_parquet('{out_path}')").fetchone()[0]
+        count_con.close()
         print(f"  batch {i + 1}/{n_batches}: {len(batch_files)} shards, {rows:,} rows, "
               f"{time.time() - t0:.0f}s", flush=True)
 
@@ -221,7 +255,7 @@ def process_month(con: duckdb.DuckDBPyConnection, year: int, month: int) -> dict
 
     batch_dir = RAW_DIR / f"_batches_{label}"
     t0 = time.time()
-    run_pass1(con, files, batch_dir)
+    run_pass1(files, batch_dir)
     print(f"pass 1 (eval-filter + flags) complete  ({time.time() - t0:.0f}s)", flush=True)
 
     counts = sequential_counts(con, batch_dir)

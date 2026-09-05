@@ -20,6 +20,7 @@ from sklearn.metrics import (
     average_precision_score, brier_score_loss, log_loss, precision_recall_curve, roc_auc_score,
 )
 
+from causal import PLY_BUCKET_EDGES, PLY_BUCKET_LABELS
 from models import fit_ladder, save_models
 
 PROCESSED_DIR = Path(__file__).resolve().parent.parent / "data" / "processed"
@@ -27,6 +28,7 @@ TABLES_DIR = Path(__file__).resolve().parent.parent / "outputs" / "tables"
 FIGURES_DIR = Path(__file__).resolve().parent.parent / "outputs" / "figures"
 
 THRESHOLDS = [10, 15, 20, 30]
+ELO_BAND_EDGES = list(range(800, 2601, 200))
 
 
 def lift_top_decile(y_true: np.ndarray, y_score: np.ndarray) -> float:
@@ -58,6 +60,44 @@ def evaluate_ladder(models: dict, splits: dict, label_col: str, train_base_rate:
             rows.append({"split": split_name, "model": name,
                          **compute_metrics(y_true, y_score, train_base_rate)})
     return pd.DataFrame(rows)
+
+
+def slice_heatmap(model, test_df: pd.DataFrame, label_col: str) -> pd.DataFrame:
+    """Calibration gap (mean predicted - actual blunder rate) for the given model, sliced by
+    Elo band x ply bucket -- the two dimensions most likely to expose where the model is
+    over- or under-confident, since both interact with how much signal is actually available
+    (weak players in the opening vs. strong players deep in an endgame, etc.)."""
+    df = test_df.copy()
+    df["elo_band"] = pd.cut(df["mover_elo"], bins=ELO_BAND_EDGES, right=False)
+    df["ply_bucket"] = pd.cut(df["ply"], bins=PLY_BUCKET_EDGES, labels=PLY_BUCKET_LABELS, right=False)
+    df["predicted"] = model.predict_proba(df)
+    df["actual"] = df[label_col].astype(int)
+    df["gap"] = df["predicted"] - df["actual"]
+    return df.groupby(["elo_band", "ply_bucket"], observed=True)["gap"].mean().unstack("ply_bucket") \
+        .reindex(columns=PLY_BUCKET_LABELS)
+
+
+def plot_slice_heatmap(heatmap: pd.DataFrame, out_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(8, 7))
+    vmax = np.nanmax(np.abs(heatmap.to_numpy()))
+    im = ax.imshow(heatmap.to_numpy(), cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+    ax.set_xticks(range(len(heatmap.columns)))
+    ax.set_xticklabels(heatmap.columns.astype(str))
+    ax.set_yticks(range(len(heatmap.index)))
+    ax.set_yticklabels(heatmap.index.astype(str))
+    ax.set_xlabel("ply bucket")
+    ax.set_ylabel("mover Elo band")
+    ax.set_title("Calibration gap (predicted - actual blunder rate), LightGBM, test")
+    for i in range(heatmap.shape[0]):
+        for j in range(heatmap.shape[1]):
+            val = heatmap.iat[i, j]
+            if pd.notna(val):
+                ax.text(j, i, f"{val:+.3f}", ha="center", va="center", fontsize=8)
+    fig.colorbar(im, ax=ax, label="predicted - actual")
+    fig.tight_layout()
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
 
 
 def plot_pr_curve(models: dict, test_df: pd.DataFrame, label_col: str, out_path: Path) -> None:
@@ -176,6 +216,12 @@ def main() -> None:
 
     plot_pr_curve(models, splits["test"], "blunder", FIGURES_DIR / "pr_curve.png")
     calibrate_and_plot(models, val_df, splits["test"], "blunder", FIGURES_DIR / "calibration.png")
+
+    heatmap = slice_heatmap(models["lightgbm"], splits["test"], "blunder")
+    heatmap.to_csv(TABLES_DIR / "slice_heatmap.csv")
+    plot_slice_heatmap(heatmap, FIGURES_DIR / "slice_heatmap.png")
+    print(f"\nwrote {TABLES_DIR / 'slice_heatmap.csv'} and {FIGURES_DIR / 'slice_heatmap.png'}")
+    print(heatmap)
 
     sensitivity = threshold_sensitivity(train_df, val_df, splits["test"])
     sensitivity.to_csv(TABLES_DIR / "threshold_sensitivity.csv", index=False)
