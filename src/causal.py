@@ -168,14 +168,27 @@ def placebo_check(raw_means: pd.DataFrame, result) -> None:
               f"parallel trends holding once base_time/Elo composition is controlled for.")
 
 
-def bucket_time_diff(df: pd.DataFrame) -> pd.DataFrame:
-    """Mean seconds spent per move, by treatment and ply bucket -- the empirical "extra seconds
-    increment buys you" in each bucket. Used by report.py to translate the regression's per-
-    bucket blunder-rate effect into a per-second rate for its counterfactual."""
+def bucket_time_diff(df: pd.DataFrame) -> pd.Series:
+    """Regression-adjusted (for base_time) extra seconds spent per move from playing with
+    increment, by ply bucket. NOT a raw group-mean difference -- base_time composition differs
+    sharply between treatment and control (treatment is mostly fast 180s games, control mostly
+    slow 600s/300s ones -- see the printed base_time distribution table), so an unadjusted
+    difference mostly measures "extra seconds from a slower base time," not from increment
+    itself, and can come out with the wrong sign entirely. Used by report.py to translate the
+    blunder-rate regression's per-bucket effect into a per-second rate for its counterfactual."""
     sub = df.copy()
     sub["time_spent"] = sub["clock_before"] - sub["clock_after"] + sub["increment"]
-    return sub.groupby(["ply_bucket", "treatment"], observed=True)["time_spent"] \
-        .mean().unstack("treatment").reindex(PLY_BUCKET_LABELS)
+    diffs = {}
+    for bucket in PLY_BUCKET_LABELS:
+        bsub = sub[sub["ply_bucket"] == bucket]
+        if bsub["treatment"].nunique() < 2:
+            diffs[bucket] = float("nan")
+            continue
+        formula = "time_spent ~ treatment + C(base_time)" if bsub["base_time"].nunique() > 1 \
+            else "time_spent ~ treatment"
+        result = smf.ols(formula, data=bsub).fit()
+        diffs[bucket] = float(result.params["treatment"])
+    return pd.Series(diffs)
 
 
 def fit_did(panel: pd.DataFrame):

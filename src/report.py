@@ -161,9 +161,9 @@ def counterfactual(player: pd.DataFrame, artifacts: dict) -> dict:
     contrast[names.index(interaction_name)] = 1.0
     did_effect_middlegame = float(contrast @ result.params.values)
 
-    # bucket_diff's columns come from unstacking causal.py's int-valued (0/1) treatment column,
-    # not bool -- see causal.py's add_ply_bucket for why it's int, not True/False.
-    extra_seconds_middlegame = float(bucket_diff.loc[MIDDLEGAME_BUCKET, 1] - bucket_diff.loc[MIDDLEGAME_BUCKET, 0])
+    # bucket_diff is causal.py's regression-adjusted (for base_time) seconds-per-move effect,
+    # already the treatment-vs-control difference -- not a pair of group means to subtract.
+    extra_seconds_middlegame = float(bucket_diff[MIDDLEGAME_BUCKET])
     reliable = abs(extra_seconds_middlegame) >= MIN_RELIABLE_SECONDS
     per_second_effect = did_effect_middlegame / extra_seconds_middlegame if reliable else float("nan")
 
