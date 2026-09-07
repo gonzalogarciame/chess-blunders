@@ -1,6 +1,7 @@
 data/raw/
 data/processed/
-outputs/
+outputs/tables/
+outputs/coaching_narrative.md
 .claude/
 __pycache__/
 *.pyc

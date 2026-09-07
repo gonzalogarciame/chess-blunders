@@ -3,6 +3,30 @@
 A personal analytics pipeline over my own chess.com games (`gonzalopelotas`): where I actually
 lose rating points, whether time pressure causes it, and what to do about it.
 
+**[Jump to: Key findings](#at-a-glance) · [Scope](#scope) · [Data](#data-srcingestpy) ·
+[Parsing/eval](#move-level-parsing-and-labelling-srcparsepy) ·
+[Features/splits](#features-and-splits-srcfeaturespy-srcsplitspy) ·
+[Models](#models-and-evaluation-srcmodelspy-srcevaluatepy) ·
+[Causal](#increment-as-a-natural-experiment-srccausalpy) ·
+[Rating-leak report](#rating-leak-report-srcreportpy) · [Running it](#running-the-pipeline)**
+
+## At a glance
+
+- **18,847** of my own moves analyzed, 738 games (2021-2026), evaluated with local Stockfish
+  since chess.com doesn't provide engine eval via its API.
+- Overall blunder rate **7.6%** (moves losing 20+ win-probability points).
+- A LightGBM model beats the base rate 3x on PR-AUC and gets **3.4x lift** in the riskiest decile
+  of predicted risk (see [Models](#models-and-evaluation-srcmodelspy-srcevaluatepy)).
+- Playing with increment plausibly reduces late-game blunders (E-value 3.32), but the evidence is
+  suggestive, not conclusive -- see [Causal](#increment-as-a-natural-experiment-srccausalpy) for
+  exactly why, reported honestly rather than oversold.
+- **Biggest concrete leak: the 21-40 ply middlegame**, where over half of blunders hang material
+  outright -- see the full ranked leak table below.
+
+<p align="center">
+  <img src="outputs/figures/player_report_gonzalopelotas.png" alt="Rating-leak report: ranked leak bar chart, individual calibration curve, and time-management counterfactual" width="100%">
+</p>
+
 ## Scope
 
 This started as a population-scale study (two months of Lichess data, ~15k games each, testing
@@ -148,14 +172,24 @@ features recover a lot of that (0.176), and LightGBM wins outright (0.203, 3.4x 
 decile) -- board state and clock pressure carry real signal even without a population to learn
 from.
 
+<p align="center">
+  <img src="outputs/figures/pr_curve.png" alt="Precision-recall curve for the model ladder on the test set" width="48%">
+  <img src="outputs/figures/calibration.png" alt="Reliability curve before and after isotonic calibration" width="48%">
+</p>
+
 **Calibration got slightly worse after isotonic regression on this data** (Brier 0.0590 ->
 0.0610) -- the val set used to fit the isotonic map is small (2,635 rows) relative to the
 original population design's, so the calibration map itself is noisier here. Reported plainly
 rather than cherry-picking a split where it looks better.
 
 Threshold sensitivity (10/15/20/30 win-% points) and the Elo-band x ply-bucket slice heatmap are
-otherwise unchanged in method; see `outputs/tables/threshold_sensitivity.csv` and
-`outputs/figures/slice_heatmap.png`.
+otherwise unchanged in method:
+
+<p align="center">
+  <img src="outputs/figures/slice_heatmap.png" alt="Calibration gap heatmap by Elo band and ply bucket" width="60%">
+</p>
+
+See `outputs/tables/threshold_sensitivity.csv` for the full sweep.
 
 ### Output
 
@@ -214,24 +248,32 @@ handled ones. Reported as such throughout, not smoothed over.
   model's own `treatment` coefficient, since the earliest ply bucket is the omitted reference
   category) is -0.0086 (SE 0.0154) -- within the 0.02 tolerance, consistent with parallel trends
   holding once `base_time`/Elo composition is controlled for.
-- **Parallel trends plot**: `outputs/figures/parallel_trends.png`.
+
+<p align="center">
+  <img src="outputs/figures/parallel_trends.png" alt="Parallel trends: blunder rate by ply bucket and increment group" width="60%">
+</p>
 
 ### DAG and estimate trajectory
 
-`outputs/figures/causal_dag.png`: unlike the population design's DAG, there's no fixed-effects
-layer left to draw as "handled" -- day-to-day form, switcher self-selection, position difficulty
-within a ply bucket, and opponent behaviour are all fully residual dashed threats here. A new one
-this design surfaced empirically: unmeasured skill/meta drift across eras that `mover_elo` only
-partially captures (the caption notes `base_time`/Elo are controlled for as regression
-covariates instead).
+Unlike the population design's DAG, there's no fixed-effects layer left to draw as "handled" --
+day-to-day form, switcher self-selection, position difficulty within a ply bucket, and opponent
+behaviour are all fully residual dashed threats here. A new one this design surfaced empirically:
+unmeasured skill/meta drift across eras that `mover_elo` only partially captures (the caption
+notes `base_time`/Elo are controlled for as regression covariates instead).
 
-`outputs/figures/estimate_trajectory.png` / `outputs/tables/estimate_trajectory.csv`:
+<p align="center">
+  <img src="outputs/figures/causal_dag.png" alt="Assumed causal structure and residual confounding, single-player n=1" width="85%">
+</p>
 
 | step | estimate | SE |
 |---|---|---|
 | 1. naive (raw, all games) | -0.0102 | 0.0048 |
 | 2. covariate-adjusted, no time interaction | -0.0187 | 0.0136 |
 | 3. full regression, treatment x ply bucket (61+) | -0.0233 | 0.0173 |
+
+<p align="center">
+  <img src="outputs/figures/estimate_trajectory.png" alt="Estimate trajectory: naive to covariate-adjusted to full regression" width="55%">
+</p>
 
 The estimate grows more negative (more protective) from naive to adjusted to the full
 ply-bucket interaction -- consistent with the hypothesis that averaging over the whole game
@@ -288,7 +330,7 @@ The biggest single leak by far is the middlegame (21-40 plies) -- over half of t
 hang material outright rather than losing to a subtler idea, which points at a concrete fix (a
 deliberate blunder-check habit before moving) rather than "study more." Low-clock-time deciles
 show up three times in the top 8, consistent with Set 5's finding that time pressure has a real
-(if not fully pinned-down) effect.
+(if not fully pinned-down) effect. (Full figure at the top of this README.)
 
 ### Counterfactual
 
@@ -306,12 +348,19 @@ blunders," which is what surfaced the base_time-adjustment bug in the first plac
 ### LLM coaching narrative
 
 Optional: if `GROQ_API_KEY` is set (free, no credit card -- get one at console.groq.com),
-`report.py` sends the ranked leak table and the causal finding to `openai/gpt-oss-120b` via Groq and
-writes a short, direct, plain-English improvement plan to `outputs/coaching_narrative.md` --
+`report.py` sends the ranked leak table and the causal finding to `openai/gpt-oss-120b` via Groq
+and writes a short, direct, plain-English improvement plan to `outputs/coaching_narrative.md` --
 addressed to the player, specific enough to act on this week, and honest about what's working as
-well as what isn't. `ANTHROPIC_API_KEY` works too (Claude instead of Llama) if set and
+well as what isn't. `ANTHROPIC_API_KEY` works too (Claude instead of the Groq model) if set and
 `GROQ_API_KEY` isn't -- that one's paid, not free, so Groq is the default. If neither key is set,
 this step is skipped and the numeric leak table/figure are unaffected.
+
+> *Sample output, generated from the table above:* "The biggest leak is the middlegame (21-40)
+> where more than half your losses are outright hung pieces, not deep tactics -- a deliberate
+> blunder-check habit before moving would fix most of this on its own. You're also clearly
+> feeling the clock: three of your worst deciles are the lowest-time ones, so budgeting more time
+> earlier (or leaning on increment more) is worth more than pure study..." (full text in
+> `outputs/coaching_narrative.md` after you run it with a key set).
 
 ### Output
 
