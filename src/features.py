@@ -1,11 +1,21 @@
 """
-Set 3 -- build a leakage-free feature matrix from data/processed/moves_{month}.parquet.
+Set 3 -- build a leakage-free feature matrix from data/processed/moves_gonzalopelotas.parquet.
 
 Every feature must be computable strictly before the move is played: board features come
 from python-chess applied to the pre-move FEN, eval/clock features only ever look at
 _before values or backward-looking history, and no feature may depend on eval_after,
 wp_after, wp_loss, the game result, or any whole-game aggregate (those are only known once
 the game -- or at least the move -- is over). See README for the full leakage-rule list.
+
+Unchanged from the original population-scale design apart from the single input file: this
+operates on a move-row table regardless of where the rows came from. mover_elo now tracks this
+one player's own rating drift across ~5 years rather than population variation -- still real
+signal, just a different kind (see README).
+
+Diagnostic slicing for the leak-finder in report.py (by opening, ply bucket, clock decile,
+opponent-strength band, color) deliberately lives there, not here -- those are self-relative
+comparisons for the coaching report, not leakage-free predictive features for the model ladder,
+and `opening`/`utc_date` pass through this module untouched for it to use.
 """
 
 import multiprocessing as mp
@@ -16,7 +26,6 @@ import numpy as np
 import pandas as pd
 
 PROCESSED_DIR = Path(__file__).resolve().parent.parent / "data" / "processed"
-MONTHS = ["2024-03", "2024-09"]
 
 PIECE_VALUES = {
     chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0,
@@ -111,10 +120,10 @@ def add_player_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_features(month: str) -> pd.DataFrame:
-    moves_path = PROCESSED_DIR / f"moves_{month}.parquet"
+def build_features() -> pd.DataFrame:
+    moves_path = PROCESSED_DIR / "moves_gonzalopelotas.parquet"
     df = pd.read_parquet(moves_path)
-    print(f"\n{month}: {len(df):,} move rows loaded")
+    print(f"\n{len(df):,} move rows loaded")
 
     df = add_board_features(df)
     df = add_eval_features(df)
@@ -131,15 +140,14 @@ def build_features(month: str) -> pd.DataFrame:
     print("null counts per feature column:")
     print(null_counts[null_counts > 0] if null_counts.any() else "  none")
 
-    out_path = PROCESSED_DIR / f"features_{month}.parquet"
+    out_path = PROCESSED_DIR / "features_gonzalopelotas.parquet"
     df.to_parquet(out_path, index=False)
-    print(f"{month}: wrote {out_path}")
+    print(f"wrote {out_path}")
     return df
 
 
 def main() -> None:
-    for month in MONTHS:
-        build_features(month)
+    build_features()
 
 
 if __name__ == "__main__":

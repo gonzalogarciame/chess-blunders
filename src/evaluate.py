@@ -2,9 +2,10 @@
 Set 4 -- metrics, calibration, and reporting for the model ladder fit in models.py.
 
 Reports PR-AUC (primary, always printed alongside the base rate it's relative to), ROC-AUC,
-Brier score, log loss, and top-decile lift, on validation, the full test month, and
-test_unseen_players. Also reruns the whole ladder at blunder thresholds of 10/15/20/30
-win-percentage points (see README for the naming-a-flip-if-one-happens rule).
+Brier score, log loss, and top-decile lift, on validation and test. No test_unseen_players
+split anymore -- "generalises to unseen players" isn't a meaningful question for one player's
+own games. Also reruns the whole ladder at blunder thresholds of 10/15/20/30 win-percentage
+points (see README for the naming-a-flip-if-one-happens rule).
 """
 
 from pathlib import Path
@@ -179,7 +180,7 @@ def threshold_sensitivity(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df:
 
 
 def load_splits() -> dict[str, pd.DataFrame]:
-    names = ["train", "val", "test", "test_unseen_players"]
+    names = ["train", "val", "test"]
     return {name: pd.read_parquet(PROCESSED_DIR / f"{name}.parquet") for name in names}
 
 
@@ -194,8 +195,7 @@ def main() -> None:
     models = fit_ladder(train_df, val_df, label_col="blunder", search_lgb=True)
     save_models(models)
 
-    eval_splits = {"val": val_df, "test": splits["test"],
-                   "test_unseen_players": splits["test_unseen_players"]}
+    eval_splits = {"val": val_df, "test": splits["test"]}
     comparison = evaluate_ladder(models, eval_splits, "blunder", train_base_rate)
     comparison.to_csv(TABLES_DIR / "model_comparison.csv", index=False)
     print(f"\nwrote {TABLES_DIR / 'model_comparison.csv'}")

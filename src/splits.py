@@ -1,13 +1,17 @@
 """
 Set 3 -- train/val/test splits.
 
-Train/val come from MONTH_A, split 80/20 by a hash of game_id -- never by move, since moves
-within a game are heavily correlated and a move-level split would leak game context between
-train and val. Test is all of MONTH_B, held out for temporal generalisation (see README).
+No population of players to hold out unseen players from anymore (single-player scope), so this
+is a purely chronological split, exploiting a real ~9-month gap in this player's own history
+(see ingest.py's printed per-month breakdown): train/val = every game through 2023 (a thin 2021
+fragment plus the dense 2023-03..2023-11 block), test = every game from 2024-08 onward. That's a
+longer, more real temporal-generalisation test than the original design's "MONTH_A vs. MONTH_B,
+>=3 months apart" rule -- does a model (and the causal estimate) fit on old play generalise to
+how this player plays 9+ months later, after whatever skill/style drift happened in between.
 
-test_unseen_players is the subset of test whose mover never appears in MONTH_A. The gap
-between test and test_unseen_players metrics (computed downstream in evaluate.py) is a
-direct measure of how much the model relies on having seen a specific player before.
+Train/val split within the train/val pool stays 80/20 by a hash of game_id -- never by move,
+since moves within a game are heavily correlated and a move-level split would leak game context
+between train and val (unchanged logic from the original design).
 """
 
 import hashlib
@@ -16,8 +20,7 @@ from pathlib import Path
 import pandas as pd
 
 PROCESSED_DIR = Path(__file__).resolve().parent.parent / "data" / "processed"
-MONTH_A = "2024-03"
-MONTH_B = "2024-09"
+TRAIN_VAL_TEST_CUTOFF = "2024-08"  # test = utc_date >= this; train/val = everything before
 VAL_FRACTION = 0.2
 
 
@@ -27,17 +30,15 @@ def game_id_hash_fraction(game_id: str) -> float:
 
 
 def make_splits() -> dict[str, pd.DataFrame]:
-    df_a = pd.read_parquet(PROCESSED_DIR / f"features_{MONTH_A}.parquet")
-    df_b = pd.read_parquet(PROCESSED_DIR / f"features_{MONTH_B}.parquet")
+    df = pd.read_parquet(PROCESSED_DIR / "features_gonzalopelotas.parquet")
 
-    is_val = df_a["game_id"].apply(game_id_hash_fraction) < VAL_FRACTION
-    train, val = df_a[~is_val], df_a[is_val]
+    is_test = df["utc_date"] >= TRAIN_VAL_TEST_CUTOFF
+    train_val, test = df[~is_test], df[is_test]
 
-    known_players = set(df_a["mover"].unique())
-    test = df_b
-    test_unseen = df_b[~df_b["mover"].isin(known_players)]
+    is_val = train_val["game_id"].apply(game_id_hash_fraction) < VAL_FRACTION
+    train, val = train_val[~is_val], train_val[is_val]
 
-    splits = {"train": train, "val": val, "test": test, "test_unseen_players": test_unseen}
+    splits = {"train": train, "val": val, "test": test}
     for name, split_df in splits.items():
         split_df.to_parquet(PROCESSED_DIR / f"{name}.parquet", index=False)
 
@@ -47,9 +48,9 @@ def make_splits() -> dict[str, pd.DataFrame]:
 
 def print_verification(splits: dict[str, pd.DataFrame]) -> None:
     for name, df in splits.items():
-        print(f"{name}: shape={df.shape}, blunder rate={df['blunder'].mean() * 100:.2f}%")
-    n_test, n_unseen = len(splits["test"]), len(splits["test_unseen_players"])
-    print(f"test_unseen_players: {n_unseen:,} rows ({n_unseen / n_test * 100:.2f}% of test)")
+        date_lo, date_hi = df["utc_date"].min(), df["utc_date"].max()
+        print(f"{name}: shape={df.shape}, blunder rate={df['blunder'].mean() * 100:.2f}%, "
+              f"dates [{date_lo}, {date_hi}]")
 
 
 if __name__ == "__main__":
