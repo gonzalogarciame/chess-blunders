@@ -9,3 +9,4 @@ statsmodels==0.15.0
 matplotlib==3.11.1
 groq
 anthropic
+python-dotenv

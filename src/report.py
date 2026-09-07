@@ -24,8 +24,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 
 from causal import PLY_BUCKET_EDGES, PLY_BUCKET_LABELS
+
+# Loads GROQ_API_KEY/ANTHROPIC_API_KEY from a .env file in the project root if present, so the
+# key only has to be entered once (not re-set as a shell env var every session).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 PROCESSED_DIR = Path(__file__).resolve().parent.parent / "data" / "processed"
 TABLES_DIR = Path(__file__).resolve().parent.parent / "outputs" / "tables"
@@ -47,7 +52,7 @@ MIN_RELIABLE_SECONDS = 1.0
 
 # Groq is the default (free tier, no credit card needed); ANTHROPIC_MODEL is only used if
 # GROQ_API_KEY isn't set but ANTHROPIC_API_KEY is (see generate_coaching_narrative).
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 ANTHROPIC_MODEL = "claude-sonnet-5"
 
 
