@@ -306,7 +306,7 @@ blunders," which is what surfaced the base_time-adjustment bug in the first plac
 ### LLM coaching narrative
 
 Optional: if `GROQ_API_KEY` is set (free, no credit card -- get one at console.groq.com),
-`report.py` sends the ranked leak table and the causal finding to Llama 3.3 70B via Groq and
+`report.py` sends the ranked leak table and the causal finding to `openai/gpt-oss-120b` via Groq and
 writes a short, direct, plain-English improvement plan to `outputs/coaching_narrative.md` --
 addressed to the player, specific enough to act on this week, and honest about what's working as
 well as what isn't. `ANTHROPIC_API_KEY` works too (Claude instead of Llama) if set and
