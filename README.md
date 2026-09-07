@@ -305,16 +305,18 @@ blunders," which is what surfaced the base_time-adjustment bug in the first plac
 
 ### LLM coaching narrative
 
-Optional: if `ANTHROPIC_API_KEY` is set, `report.py` sends the ranked leak table and the causal
-finding to Claude and writes a short, direct, plain-English improvement plan to
-`outputs/coaching_narrative.md` -- addressed to the player, specific enough to act on this week,
-and honest about what's working as well as what isn't. If the key isn't set, this step is skipped
-and the numeric leak table/figure are unaffected.
+Optional: if `GROQ_API_KEY` is set (free, no credit card -- get one at console.groq.com),
+`report.py` sends the ranked leak table and the causal finding to Llama 3.3 70B via Groq and
+writes a short, direct, plain-English improvement plan to `outputs/coaching_narrative.md` --
+addressed to the player, specific enough to act on this week, and honest about what's working as
+well as what isn't. `ANTHROPIC_API_KEY` works too (Claude instead of Llama) if set and
+`GROQ_API_KEY` isn't -- that one's paid, not free, so Groq is the default. If neither key is set,
+this step is skipped and the numeric leak table/figure are unaffected.
 
 ### Output
 
 `outputs/tables/rating_leaks.csv`, `outputs/figures/player_report_gonzalopelotas.png`,
-`outputs/coaching_narrative.md` (if `ANTHROPIC_API_KEY` is set).
+`outputs/coaching_narrative.md` (if `GROQ_API_KEY` or `ANTHROPIC_API_KEY` is set).
 
 ## Running the pipeline
 
@@ -329,7 +331,7 @@ python src/features.py   # -> data/processed/features_gonzalopelotas.parquet
 python src/splits.py     # -> data/processed/{train,val,test}.parquet
 python src/evaluate.py   # fits + evaluates the model ladder -> outputs/
 python src/causal.py     # increment natural experiment -> outputs/
-python src/report.py     # rating-leak report -> outputs/ (set ANTHROPIC_API_KEY for the narrative)
+python src/report.py     # rating-leak report -> outputs/ (set GROQ_API_KEY for the narrative)
 ```
 
 `pytest tests/` covers `parse.py`'s off-by-one alignment logic via an injected fake evaluator, so

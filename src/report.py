@@ -45,7 +45,10 @@ MIDDLEGAME_BUCKET = PLY_BUCKET_LABELS[1]
 SHIFT_FRACTION = 0.20
 MIN_RELIABLE_SECONDS = 1.0
 
-LLM_MODEL = "claude-sonnet-5"
+# Groq is the default (free tier, no credit card needed); ANTHROPIC_MODEL is only used if
+# GROQ_API_KEY isn't set but ANTHROPIC_API_KEY is (see generate_coaching_narrative).
+GROQ_MODEL = "llama-3.3-70b-versatile"
+ANTHROPIC_MODEL = "claude-sonnet-5"
 
 
 def load_test_set() -> pd.DataFrame:
@@ -270,23 +273,44 @@ useful rather than just a list of flaws), (4) a closing note on the time-managem
 Address the player directly ("you"). No headers, no bullet points, plain prose."""
 
 
-def generate_coaching_narrative(leaks: pd.DataFrame, cf: dict, overall_rate: float) -> str | None:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("\nANTHROPIC_API_KEY not set -- skipping the LLM coaching narrative "
-              "(numeric leak table/figure are unaffected). Set it and rerun report.py to "
-              "generate outputs/coaching_narrative.md.")
-        return None
-
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
-    prompt = build_llm_prompt(leaks, cf, overall_rate)
-    response = client.messages.create(
-        model=LLM_MODEL,
+def _call_groq(prompt: str, api_key: str) -> str:
+    import groq
+    client = groq.Groq(api_key=api_key)
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
         max_tokens=1024,
         messages=[{"role": "user", "content": prompt}],
     )
-    narrative = "".join(block.text for block in response.content if block.type == "text")
+    return response.choices[0].message.content
+
+
+def _call_anthropic(prompt: str, api_key: str) -> str:
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=ANTHROPIC_MODEL,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return "".join(block.text for block in response.content if block.type == "text")
+
+
+def generate_coaching_narrative(leaks: pd.DataFrame, cf: dict, overall_rate: float) -> str | None:
+    """Groq first (free tier, no credit card needed -- console.groq.com) since that's this
+    project's default; ANTHROPIC_API_KEY works too if you'd rather use that (paid) instead."""
+    groq_key = os.environ.get("GROQ_API_KEY")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    if groq_key:
+        narrative = _call_groq(build_llm_prompt(leaks, cf, overall_rate), groq_key)
+    elif anthropic_key:
+        narrative = _call_anthropic(build_llm_prompt(leaks, cf, overall_rate), anthropic_key)
+    else:
+        print("\nNeither GROQ_API_KEY nor ANTHROPIC_API_KEY is set -- skipping the LLM coaching "
+              "narrative (numeric leak table/figure are unaffected). Get a free key at "
+              "console.groq.com, set GROQ_API_KEY, and rerun report.py to generate "
+              "outputs/coaching_narrative.md.")
+        return None
 
     out_path = Path(__file__).resolve().parent.parent / "outputs" / "coaching_narrative.md"
     out_path.write_text(narrative, encoding="utf-8")
