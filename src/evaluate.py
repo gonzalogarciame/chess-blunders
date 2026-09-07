@@ -29,7 +29,9 @@ TABLES_DIR = Path(__file__).resolve().parent.parent / "outputs" / "tables"
 FIGURES_DIR = Path(__file__).resolve().parent.parent / "outputs" / "figures"
 
 THRESHOLDS = [10, 15, 20, 30]
-ELO_BAND_EDGES = list(range(800, 2601, 200))
+# Wider/lower than the original population design's 800-2600 -- this player's own rating (across
+# chess.com's per-time-class scale, from their 2021 games through now) starts well below 800.
+ELO_BAND_EDGES = list(range(0, 2001, 200))
 
 
 def lift_top_decile(y_true: np.ndarray, y_score: np.ndarray) -> float:
