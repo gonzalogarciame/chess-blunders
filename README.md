@@ -1,319 +1,336 @@
-# Chess Blunder Prediction and Time Pressure
+# Chess Rating Leaks & Blunder Coach
 
-## Data
+A personal analytics pipeline over my own chess.com games (`gonzalopelotas`): where I actually
+lose rating points, whether time pressure causes it, and what to do about it.
 
-Source: [Lichess/standard-chess-games](https://huggingface.co/datasets/Lichess/standard-chess-games)
-on Hugging Face (CC0), hive-partitioned by `year=/month=`. `src/ingest.py` reads it directly from
-the HF `hf://` filesystem via DuckDB, filtering with pushed-down predicates rather than downloading
-whole months.
+## Scope
 
-### Train/val vs. test months
+This started as a population-scale study (two months of Lichess data, ~15k games each, testing
+whether a model trained on one month's players generalises to a different month's players). It's
+now the opposite: one player's own games, no population or peer comparison anywhere. Every number
+in this project is self-relative -- a slice of my own moves against my own overall average.
+That's a deliberate trade: less statistical power, but every finding is directly actionable
+("you blunder 2.5x your average rate in the 21-40 ply range") without needing anyone else's data.
 
-Training/validation data comes from one month (`MONTH_A`), the held-out test set from a second
-month at least three months later (`MONTH_B`). Both are pulled directly from the source rather than
-split from a single month. This is deliberate: a random split within one month only tests whether
-the model generalises across *games*, since it would still see the same population of players,
-engine versions, opening trends, and rating dynamics that produced the training data. Testing on a
-separate, later month checks whether it generalises across *time* as well -- the harder and more
-realistic bar for a model meant to be useful going forward.
+Two consequences of that pivot run through the whole pipeline and are worth stating up front
+rather than discovering three sections down:
 
-### Filters applied (`src/ingest.py`)
+- **No Elo-population signal.** In the original design, Elo varied *across* many different
+  players and was a strong predictor of blunder risk. Here, `mover_elo` is one player's own
+  rating drifting across ~5 years -- a much noisier, weaker signal (the model ladder below finds
+  it's not even better than the base rate on its own). Time/era drift, not skill-population
+  variation, is what it's mostly picking up.
+- **No player fixed effects.** The causal design (Set 5) originally identified the increment
+  effect via fixed effects across many "switcher" players. With n=1 player, that collapses to a
+  constant. The natural analogue -- day fixed effects, restricted to days this player used both
+  settings -- turned out not to be viable either (checked empirically, not assumed: see Set 5).
+  The causal estimate here is real, but it's weaker evidence than the original design's.
 
-A game is kept only if, in order:
+## Data (`src/ingest.py`)
 
-1. `movetext` contains `[%eval` (engine evaluations present).
-2. `movetext` also contains `[%clk` (per-move clock data present).
-3. `TimeControl` falls in one of the candidate increment-pair buckets.
-4. Neither player is a `BOT`.
-5. Both `WhiteElo` and `BlackElo` are present and in `[800, 2600]`.
-6. `Termination` is `"Normal"` or `"Time forfeit"` (drops abandoned/rules-infraction games; keeps
-   time forfeits, since Set 2 needs them for the "final move of a game lost on time" exclusion).
-7. At least 20 plies (approximated by counting `[%clk` occurrences in `movetext`, since every
-   annotated ply carries exactly one clock comment once step 2 has passed).
+Source: chess.com's public games-export API
+(`api.chess.com/pub/player/gonzalopelotas/games/{year}/{month}`), unauthenticated -- unlike the
+original Lichess/HuggingFace pull, this needs no access token at all.
 
-`[%eval]` coverage is rare (~6% of all games), and checking for it requires decoding the
-`movetext` column for every row in the month regardless of what happens next -- that IO cost is
-unavoidable. `ingest.py` pays it exactly once per month: a single pass filters on `[%eval` alone
-and writes survivors (with boolean flags for every later filter) to a local intermediate parquet;
-every subsequent count and the final column selection run locally against that file, not against
-the remote dataset again.
+**chess.com never exposes engine `[%eval]` via this API, even for games "Game Review" was run
+on** -- verified across all 972 of this player's games spanning 2021-2026 before committing to
+this design: zero carry `[%eval]`, 923 carry `[%clk]`. So unlike the original design, eval isn't
+filtered on or extracted from the PGN at all; `parse.py` generates it with a local Stockfish
+instance instead (see below).
 
-Time-control buckets are tried in order `180+0/180+2`, then `300+0/300+3`, then `600+0/600+5` --
-the first pair where both buckets have at least ~15,000 surviving games in *both* months is used
-for both months' final output, so train/val and test share a time control. All three pairs' counts
-are printed for both months.
+### Filters applied
+
+A game is kept only if: `rules == "chess"` (no variants), `time_class != "daily"` (correspondence
+games don't fit a clock-pressure study), `rated` (so Elo means something), `movetext` contains
+`[%clk]`, and it wasn't abandoned. Termination and per-side outcome ("timeout", "resigned",
+"abandoned", ...) come from chess.com's own structured per-side result codes, not from parsing
+free-text strings the way the Lichess `Termination` field required.
+
+**738 of 972 games survive.** Time-control breakdown after filtering: `180+2` (474 games) heavily
+dominates; the only genuinely *balanced* matched pair (same base time, increment vs. none) is
+**300 / 300+5** (31 / 28 games) -- `180`/`180+2` looked like the obvious pair by raw volume, but
+almost all of this player's zero-increment `180` games turn out to be unrated casual games and
+get filtered out, leaving only 3 survivors against 474. Checking real survivor counts before
+picking a design (rather than assuming the most common time control is the right one) is what
+caught this -- see Set 5 for why even the balanced pair isn't enough on its own, either.
 
 ### Output
 
-`data/raw/games_{year}-{month}.parquet`, columns: `game_id`, `white`, `black`, `white_elo`,
-`black_elo`, `time_control`, `result`, `termination`, `utc_date`, `opening`, `movetext`.
-
-### Requirements
-
-A Hugging Face access token is required (set `HF_TOKEN` in the environment before running) --
-anonymous requests to the dataset get rate-limited (HTTP 429) once DuckDB opens more than a
-handful of concurrent shard connections, which happens quickly at ~400 shards/month.
+`data/raw/games_gonzalopelotas.parquet`, 738 rows: `game_id`, `white`, `black`, `white_elo`,
+`black_elo`, `time_control`, `result`, `termination`, `utc_date`, `end_time` (Unix epoch, used
+for the causal day-level grouping), `opening`, `movetext`.
 
 ## Move-level parsing and labelling (`src/parse.py`)
 
-Each game is replayed with `python-chess` into one row per ply (move exclusions in the code
-docstring). The annotation comment attached to the move played at ply `t` describes the position
-*after* that move, so for the row at ply `t`: `eval_after` is the eval on ply `t`, `eval_before` is
-the eval on ply `t-1`. Clocks only change on their own side's move, so the mover's clock before
-their move is their own last update, on ply `t-2`, not `t-1` (that's the opponent's clock).
+Each game is replayed with `python-chess`. Since there's no `[%eval]` to parse, **every position
+along the mainline is evaluated with a local Stockfish 19 instance** (`chess.engine`, depth 14).
+Each worker process in the multiprocessing pool launches one persistent engine and reuses it
+across every game/position it handles -- launching Stockfish per-position would dominate runtime.
+The pass is checkpointed by 50-game batch (mirroring the original `ingest.py`'s resumability
+philosophy), since this is now the expensive step rather than parsing being nearly free: the full
+run over 738 games (~19k evaluated positions) took about 11 minutes on 16 cores.
 
-Evals are converted from centipawns to win probability with the Lichess formula before
-thresholding, from the mover's point of view. This has a useful side effect worth calling out: the
-sigmoid saturates near 0 and 100, so a position that is already close to lost or won can barely
-move win probability further even on a large centipawn swing -- meaningful `wp_loss` is only
-possible in positions that are still contested. That's the correct behaviour for a blunder metric
-(a move that seals an already-decided game shouldn't count the same as one that throws away a
-level position), and it means no separate "skip lost positions" rule is needed.
+Annotation semantics are otherwise unchanged from the original design: `eval_after` is the eval
+on ply `t`, `eval_before` is the eval on ply `t-1`; the mover's clock before ply `t` is their own
+last update on ply `t-2`, not `t-1` (the opponent's). `blunder = wp_loss >= 20` by default,
+computed the same win-probability-conversion way as before.
 
-`blunder = wp_loss >= 20` by default; `wp_loss` itself is stored as a continuous column so Set 4
-can re-threshold at 10/15/20/30 without re-parsing.
+**Only this player's own moves are emitted** -- not both colors, since there's no population
+anymore and the whole project is about this one player's decisions. One side effect worth naming:
+`wp_volatility_3` (rolling std of the last 3 `wp_before` values) now spans the player's last 3
+*own* moves, not 3 raw plies alternating between both players the way it did in the population
+design -- an intentional consequence of dropping the opponent's rows, not a bug.
+
+Also handled here, unlike the Lichess-based original: chess.com clocks carry fractional seconds
+(`0:03:01.4`, not whole seconds), and `TimeControl` omits `+0` for zero increment (`"600"`, not
+`"600+0"`).
+
+Free from the same `engine.analyse()` call already needed for eval: each row also stores the
+engine's suggested move both before the player's move (`engine_pv_before`) and after it
+(`engine_pv_after`, the opponent's best reply to what was actually played). `report.py` uses the
+latter to coarsely tag blunders that hang material outright.
+
+### Output
+
+`data/processed/moves_gonzalopelotas.parquet` -- **18,847 move rows**, overall blunder rate
+**7.59%**, mean `wp_loss` 5.04.
 
 ## Features and splits (`src/features.py`, `src/splits.py`)
 
 ### Leakage rules
 
-Every feature must be computable strictly *before* the move is played:
-
-- No feature may use `eval_after`, `cp_after`, `wp_after`, or `wp_loss` -- these describe the
-  position after the move, which requires already knowing what was played.
-- No feature may use the game `result` or `termination`.
-- No feature may use aggregate game statistics (e.g. total accuracy, total blunder count) --
-  those are only known once the whole game is over.
-- Rolling features (`wp_volatility_3`, `wp_swing_last`, `time_spent_prev`) may only look
-  backwards at prior plies of the same game; the current ply's own after-values are never
-  part of the window.
-
-`features.py` asserts `BANNED_COLUMNS.isdisjoint(FEATURE_COLUMNS)` at build time and prints the
-result, rather than relying on code review to catch a leaked column.
+Unchanged from the original design -- every feature must be computable strictly *before* the
+move is played, and `features.py` asserts `BANNED_COLUMNS.isdisjoint(FEATURE_COLUMNS)` at build
+time rather than relying on code review to catch a leaked column. See the original rule list:
+no `eval_after`/`cp_after`/`wp_after`/`wp_loss`, no game result/termination, no whole-game
+aggregates, and rolling features only look backwards within the same game.
 
 ### Splits (`src/splits.py`)
 
-Train/val are both drawn from `MONTH_A`, split 80/20 by a hash of `game_id` -- never by
-individual move, since moves within one game are heavily correlated (splitting by move would
-leak the rest of that game's context between train and val). Test is all of `MONTH_B`.
+No more `MONTH_A`/`MONTH_B` population split. Instead, a **chronological split exploiting a real
+gap in this player's own history**: this player's games cluster into a thin 2021 fragment, a
+dense 2023-03..2023-11 block (611 of 738 games), then a ~9-month gap before play resumes in
+2024-08 and continues through 2026. Train/val = everything through 2023; **test = everything from
+2024-08 onward** -- a longer, more real temporal-generalisation test than the original design's
+"≥3 months apart" rule: does a model (and the causal estimate) fit on 2021-2023 play generalise to
+how this player plays 9+ months later. Train/val split within that pool stays 80/20 by a hash of
+`game_id`, unchanged logic from the original design.
 
-`test_unseen_players` is the subset of test whose mover never appears (as a mover) anywhere in
-`MONTH_A`. Comparing metrics on test vs. `test_unseen_players` (done in `evaluate.py`) directly
-measures how much of the model's performance comes from having seen a given player's tendencies
-before, versus generalising from board/clock/eval state alone.
+No `test_unseen_players` split -- "generalises to unseen players" isn't a meaningful question for
+one player's own games.
+
+### Output
+
+`train` (10,879 rows, blunder rate 7.53%), `val` (2,635 rows, 9.37%), `test` (5,333 rows, 6.83%,
+dates 2024-08-01 to 2026-09-07).
 
 ## Models and evaluation (`src/models.py`, `src/evaluate.py`)
 
-### No resampling
+Model ladder, calibration methodology, and metrics are all unchanged from the original design
+(no resampling; base rate / Elo-only / Elo+position / full logistic / LightGBM, all reported side
+by side; isotonic calibration fit on val and applied to test; PR-AUC as the primary metric,
+always alongside the base rate it's relative to). What changed is what the numbers say, given the
+single-player scope:
 
-Every model is trained on the natural class distribution -- no SMOTE, no undersampling, no
-oversampling. Blunders are genuinely rare (see Set 2's verification output), and resampling
-changes the base rate the model learns from, which distorts its predicted probabilities away
-from the true blunder frequency. Since the whole point of this project is a *calibrated*
-probability, not just a ranking, that trade-off isn't acceptable here -- a resampled model might
-score similarly on ranking metrics like PR-AUC while being badly miscalibrated.
+| split | model | PR-AUC | base rate | ROC-AUC | Brier | lift (top decile) |
+|---|---|---|---|---|---|---|
+| test | base_rate | 0.068 | 0.075 | 0.500 | 0.0636 | 1.57 |
+| test | elo_only | 0.067 | 0.075 | 0.481 | 0.0639 | 1.10 |
+| test | elo_position | 0.087 | 0.075 | 0.573 | 0.0642 | 1.57 |
+| test | full_logistic | 0.176 | 0.075 | 0.752 | 0.0605 | 3.00 |
+| test | lightgbm | **0.203** | 0.075 | 0.805 | 0.0590 | **3.41** |
 
-### Model ladder
+**Elo-only test PR-AUC (0.067) is *not* better than the base rate (0.068)** -- flagged plainly by
+`evaluate.py` rather than hidden, and expected given the scope: Elo here is one player's own
+rating drifting over 5 years, not population variation, so on its own it's a genuinely weak
+signal (a much bigger swing than what population Elo would give). Full board/clock/history
+features recover a lot of that (0.176), and LightGBM wins outright (0.203, 3.4x lift in the top
+decile) -- board state and clock pressure carry real signal even without a population to learn
+from.
 
-Fit in order, all reported side by side: base rate, Elo-only logistic, Elo+position logistic
-(`mover_elo`, `wp_before`, `legal_move_count`, `material_total`), full logistic on every feature
-(standardised, L2-penalised -- kept deliberately simple and linear so its coefficients stay
-interpretable for Set 6), and LightGBM on every feature. LightGBM's `num_leaves`,
-`min_child_samples`, and `learning_rate` are grid-searched (`LGB_PARAM_GRID` in `models.py`) with
-early stopping on validation PR-AUC via a custom `feval`; `n_estimators` isn't a separate grid
-dimension since early stopping already picks the effective number of trees per configuration.
-The grid is intentionally small -- this isn't a Kaggle leaderboard exercise, and `evaluate.py`
-reports whichever model wins honestly rather than searching until LightGBM comes out on top (see
-Verification in the code output).
+**Calibration got slightly worse after isotonic regression on this data** (Brier 0.0590 ->
+0.0610) -- the val set used to fit the isotonic map is small (2,635 rows) relative to the
+original population design's, so the calibration map itself is noisier here. Reported plainly
+rather than cherry-picking a split where it looks better.
 
-Rolling-history features are null for a mover's first tracked move in a game (see Set 3). The
-logistic models fill those with 0; LightGBM is left the native nulls, since it splits on
-missingness directly and doesn't need imputation.
-
-### Calibration
-
-Isotonic regression is fit on the validation set's LightGBM predictions and applied to the test
-set's LightGBM predictions (LightGBM is the most flexible model in the ladder, so it's the one
-whose calibration is most worth checking). Brier score is reported before and after, and the
-10-bin reliability curve for both is saved to `outputs/figures/calibration.png`.
-
-### Metrics
-
-Primary metric is PR-AUC, always reported alongside the base rate it's relative to (PR-AUC isn't
-comparable across datasets/splits with different base rates on its own). Also reported: ROC-AUC,
-Brier score, log loss, and lift in the top decile of predicted risk -- each computed on
-validation, the full test month, and `test_unseen_players` separately.
-
-### Threshold sensitivity
-
-The whole ladder is refit at blunder thresholds of 10/15/20/30 win-percentage points (recomputed
-from the already-stored continuous `wp_loss` column, no re-parsing needed). LightGBM uses a fixed
-default configuration for this table rather than re-running the grid search at every threshold,
-to keep the sweep's compute bounded. Results are in `outputs/tables/threshold_sensitivity.csv`;
-if any conclusion (e.g. which model wins) flips across thresholds, that's noted here once real
-numbers are in.
-
-### Error analysis: slice heatmap
-
-`evaluate.py` also slices the LightGBM model's calibration gap (mean predicted probability minus
-actual blunder rate) by mover Elo band x ply bucket, the two dimensions most likely to expose
-where the model over- or under-estimates risk, since both change how much signal is actually
-available (e.g. a weak player in the opening vs. a strong player deep in an endgame). Saved to
-`outputs/tables/slice_heatmap.csv` / `outputs/figures/slice_heatmap.png`. The two paragraphs of
-failure-mode analysis this is meant to support get written once the heatmap reflects real data --
-speculating about specific failure modes from a synthetic validation run would just be fiction.
+Threshold sensitivity (10/15/20/30 win-% points) and the Elo-band x ply-bucket slice heatmap are
+otherwise unchanged in method; see `outputs/tables/threshold_sensitivity.csv` and
+`outputs/figures/slice_heatmap.png`.
 
 ### Output
 
 `outputs/tables/model_comparison.csv`, `outputs/tables/threshold_sensitivity.csv`,
 `outputs/tables/slice_heatmap.csv`, `outputs/figures/calibration.png`,
-`outputs/figures/pr_curve.png`, `outputs/figures/slice_heatmap.png`, and pickled fitted models in
+`outputs/figures/pr_curve.png`, `outputs/figures/slice_heatmap.png`, pickled fitted models in
 `data/processed/model_{name}.pkl`.
 
 ## Increment as a natural experiment (`src/causal.py`)
 
-Everything so far is predictive, not causal -- LightGBM being good at ranking blunder risk from
-clock state says nothing about whether *more time* actually prevents blunders, since players who
-choose fast time controls likely differ from players who choose slow ones in ways that also
-affect blunder rate. Increment offers a cleaner design: within a matched pair (same base time,
-different increment -- the same pairing `ingest.py` used to pick the dataset's time control),
-increment is fixed before the game starts and can't respond to any specific position, and its
-effect on the clock only compounds as the game goes on. That gives a
-difference-in-differences (DiD) structure:
+Setup unchanged from the original design's logic: increment is fixed before a game starts and
+can't respond to any specific position, and its effect on the clock only compounds as the game
+goes on -- a difference-in-differences structure (unit: game, treatment: increment > 0, "time":
+ply bucket, outcome: blunder rate in that game's moves in that bucket).
 
-- unit: player-game
-- treatment: `increment > 0`
-- "time": ply bucket (`9-20`, `21-40`, `41-60`, `61+`)
-- outcome: blunder rate within that player-game's moves in that bucket
+### What changed, and why (checked empirically)
 
-The regression is `blunder_rate ~ treatment * ply_bucket` with **player** fixed effects (not
-player-game), so a switcher's own games still vary in treatment status and the treatment main
-effect stays identified rather than being absorbed. Fixed effects are implemented by demeaning
-(the within estimator) rather than a dummy per player, since the player count makes a dummy
-design matrix impractical; standard errors are cluster-robust by player. Caveat: plain OLS on
-demeaned data doesn't reduce residual degrees of freedom for the number of player means
-absorbed, so reported SEs are a close approximation rather than textbook-exact -- acceptable
-here since player-clustering is what matters most for validity, and that part is done properly.
+The original design identified the effect via **player fixed effects across many "switcher"
+players**. With one player that collapses to a constant -- no cross-player variation to demean.
+The natural single-player analogue is **day fixed effects, restricted to "switch days"** (days
+this player used both settings) -- directly targeting the exact confound the original README
+flagged as the single most serious residual threat ("switchers may choose increment based on how
+they expect to play that day").
 
-Sample is restricted to **switchers**: players who appear in both increment groups (pooling both
-months). This removes the selection problem of who chooses which time control -- every
-comparison is within-player.
+That was the plan. `causal.py` checks it empirically before committing to it, and the numbers
+rule it out:
+
+```
+switch-day diagnostic (days with both a treatment and a control game):
+  base=60:  no-inc moves=103,   inc moves=1,026,  switch_days=2/27 days
+  base=180: no-inc moves=52,    inc moves=11,995,  switch_days=1/200 days
+  base=300: no-inc moves=779,   inc moves=746,     switch_days=0/27 days
+```
+
+This player just doesn't switch time controls within short windows -- they play one setting for
+a stretch, then another, not both in the same session. Day fixed effects have essentially no
+within-day variation left to work with at any matched base time.
+
+**Falls back to regression adjustment instead of fixed effects**: pool every game (not
+restricted to one matched pair), and control for `base_time`, `mover_elo`, and `opp_elo` directly
+in the regression (`blunder_rate ~ treatment * C(ply_bucket) + C(base_time) + mover_elo +
+opp_elo`, cluster-robust SE by game) rather than removing them via demeaning. `mover_elo` absorbs
+most of the mechanical confound (this player's Elo, and which time control they favoured, both
+drifted a lot across the 2021/2023/2024+ eras). This is a real, honest downgrade in rigor from
+the population design's fixed effects, forced by this player's actual play patterns -- day-to-day
+form and switcher self-selection go back to being fully residual threats rather than partially
+handled ones. Reported as such throughout, not smoothed over.
 
 ### Required checks
 
-- **Parallel trends**: the earliest ply bucket's blunder rate should be similar across increment
-  groups, since the clocks have barely diverged yet. Plotted in
-  `outputs/figures/parallel_trends.png`. If the lines start apart, the design is compromised and
-  that gets said plainly in the code's printed output, not smoothed over.
-- **Placebo**: the treatment x ply_bucket interaction is zero by construction in the omitted
-  (earliest) bucket; `causal.py` additionally confirms this empirically by printing the raw,
-  non-regression gap between groups in that bucket.
-- **Balance table**: mean/SD of mover Elo, opponent Elo, and game length (max observed `ply` in
-  the retained move rows -- a lower bound on true game length, since Set 2 drops some plies)
-  across increment groups, restricted to the switcher sample, in
-  `outputs/tables/increment_balance.csv`.
+- **Balance table**: mover Elo is very different by treatment group (652 mean / control vs. 376
+  mean / treatment) -- exactly why regression adjustment, not a raw comparison, is necessary.
+  `base_time` composition differs sharply too (`outputs/tables/increment_balance_base_time.csv`):
+  treatment is overwhelmingly 180s games, control overwhelmingly 600s/300s.
+- **Placebo check**: raw earliest-bucket gap +0.0075; the regression-*adjusted* gap (the fitted
+  model's own `treatment` coefficient, since the earliest ply bucket is the omitted reference
+  category) is -0.0086 (SE 0.0154) -- within the 0.02 tolerance, consistent with parallel trends
+  holding once `base_time`/Elo composition is controlled for.
+- **Parallel trends plot**: `outputs/figures/parallel_trends.png`.
 
 ### DAG and estimate trajectory
 
-`outputs/figures/causal_dag.png` is a conceptual diagram (not computed from data) of the assumed
-path -- increment to clock time to blunder -- alongside the three residual threats named below,
-each drawn as an unresolved dashed arrow into the outcome (and, for day-to-day form, into
-treatment itself, since it's a selection story). Stable between-player skill is the one confound
-player fixed effects do handle, so it's noted in a caption rather than drawn as another arrow.
+`outputs/figures/causal_dag.png`: unlike the population design's DAG, there's no fixed-effects
+layer left to draw as "handled" -- day-to-day form, switcher self-selection, position difficulty
+within a ply bucket, and opponent behaviour are all fully residual dashed threats here. A new one
+this design surfaced empirically: unmeasured skill/meta drift across eras that `mover_elo` only
+partially captures (the caption notes `base_time`/Elo are controlled for as regression
+covariates instead).
 
-`outputs/figures/estimate_trajectory.png` / `outputs/tables/estimate_trajectory.csv` show the
-increment estimate at three points of increasing rigor: (1) a naive raw comparison across every
-player, no adjustment; (2) player fixed effects restricted to switchers, but pooled across ply
-buckets (removes selection, still assumes a constant effect over the whole game); (3) the full
-DiD, effect in the latest bucket. If (1) and (2) land close together and (3) is larger, that's
-this project's evidence that averaging over the whole game dilutes a real, compounding effect
-rather than that the effect doesn't exist -- and if they don't land that way, this is where that
-gets said.
+`outputs/figures/estimate_trajectory.png` / `outputs/tables/estimate_trajectory.csv`:
+
+| step | estimate | SE |
+|---|---|---|
+| 1. naive (raw, all games) | -0.0102 | 0.0048 |
+| 2. covariate-adjusted, no time interaction | -0.0187 | 0.0136 |
+| 3. full regression, treatment x ply bucket (61+) | -0.0233 | 0.0173 |
+
+The estimate grows more negative (more protective) from naive to adjusted to the full
+ply-bucket interaction -- consistent with the hypothesis that averaging over the whole game
+dilutes a real, compounding effect, though the 95% CI at the latest bucket (-0.057, +0.011)
+still includes zero. This is suggestive, not conclusive, evidence -- exactly what the weaker
+identification strategy above predicts.
+
+### Sensitivity analysis (E-value)
+
+Total effect at the latest ply bucket: -0.0233 blunder-rate points on a baseline of 0.0477
+(implied risk ratio 0.512). **E-value 3.32** for the point estimate, **1.00** for the CI bound
+closest to null (i.e. the CI already includes no effect, so no confounding is needed to reach
+it there). Read this as an upper bound on rigor, not a guarantee: this is regression adjustment
+on observed covariates, not a fixed-effects or switcher design. Day-to-day form and switcher
+self-selection -- the confounders this E-value is warning about -- are exactly what this
+player's data didn't have enough within-day switching to rule out directly.
 
 ### Output
 
-`outputs/tables/increment_balance.csv`, `outputs/tables/increment_did_results.csv`,
-`outputs/tables/increment_sensitivity.csv`, `outputs/tables/estimate_trajectory.csv`,
-`outputs/figures/parallel_trends.png`, `outputs/figures/estimate_trajectory.png`,
-`outputs/figures/causal_dag.png`.
+`outputs/tables/increment_balance.csv`, `outputs/tables/increment_balance_base_time.csv`,
+`outputs/tables/increment_did_results.csv`, `outputs/tables/increment_sensitivity.csv`,
+`outputs/tables/estimate_trajectory.csv`, `outputs/figures/parallel_trends.png`,
+`outputs/figures/estimate_trajectory.png`, `outputs/figures/causal_dag.png`,
+`data/processed/causal_did_artifacts.pkl`.
 
-## Sensitivity analysis
+## Rating-leak report (`src/report.py`)
 
-### E-value
+No peer/population comparison anywhere (explicit choice) -- every leak is this player's own
+moves sliced against their own overall average (6.83% on the test set), which is what makes each
+finding actionable without needing other players' data.
 
-`causal.py` reports an [E-value](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5771830/) (VanderWeele
-& Ding, 2017) for the total treatment effect in the latest ply bucket (main effect + interaction
--- the bucket where the design predicts the compounding effect is largest). The linear-probability
-effect is converted to an approximate risk ratio using the control group's raw blunder rate in that
-bucket as the reference risk, and the E-value is reported for both the point estimate and the
-confidence interval bound closest to the null. It answers one specific question: how strongly would
-an unmeasured confounder need to be associated with *both* increment and blunder risk, above and
-beyond player fixed effects, to fully explain away the estimate?
+Slices across five dimensions already present in the data (opening family, color, ply bucket,
+clock decile, opponent-strength band relative to this player's own Elo), each requiring >=20
+moves to count. Ranked by `excess_rate x moves_seen` (an estimate of actual excess blunders
+accounted for, so a rare-but-severe slice doesn't outrank a frequent-but-moderate one). Each
+blunder in a reported slice is also tagged `hangs_material` if the engine's best reply to the
+resulting position is itself a capture -- free from the eval calls `parse.py` already made, no
+extra engine cost.
 
-### What would make this credible, and why my data doesn't get me there
+**Top leaks found (test set, 2024-08 onward):**
 
-Player fixed effects and the switcher restriction rule out one specific, narrow kind of
-confounding: stable differences between people who always play with increment and people who
-never do. They rule out nothing else. Three residual threats keep this from being a credible
-causal estimate on their own:
+| dimension | value | moves | blunder rate | vs. own avg | est. excess blunders | % hang material |
+|---|---|---|---|---|---|---|
+| ply_bucket | 21-40 | 1,830 | 9.3% | +2.5pp | 46.1 | 53% |
+| mover_color | black | 2,343 | 7.4% | +0.6pp | 13.1 | 52% |
+| clock_decile | 7 | 531 | 9.2% | +2.4pp | 12.8 | 45% |
+| clock_decile | 8 | 534 | 9.0% | +2.2pp | 11.6 | 42% |
+| clock_decile | 10 (least time) | 534 | 9.0% | +2.2pp | 11.6 | 54% |
+| opening_family | Queens Gambit | 136 | 12.5% | +5.7pp | 7.7 | 59% |
+| opening_family | Kings Pawn | 138 | 11.6% | +4.8pp | 6.6 | 69% |
+| opp_band | stronger opponents | 617 | 7.8% | +1.0pp | 5.9 | 58% |
 
-**Unobserved position difficulty within a ply bucket.** A ply bucket only fixes how far into the
-game a move is, not how sharp, forcing, or theoretically well-trodden the resulting position is.
-If increment and non-increment games systematically differ in the kinds of positions reached at a
-given depth -- say, because faster time controls encourage different opening choices, or more
-forcing tactical middlegames -- the DiD estimate is partly picking up position difficulty, not
-time pressure, and ply bucket does nothing to separate the two.
+The biggest single leak by far is the middlegame (21-40 plies) -- over half of those blunders
+hang material outright rather than losing to a subtler idea, which points at a concrete fix (a
+deliberate blunder-check habit before moving) rather than "study more." Low-clock-time deciles
+show up three times in the top 8, consistent with Set 5's finding that time pressure has a real
+(if not fully pinned-down) effect.
 
-**Differential opponent behaviour under increment.** The design treats the opponent as a fixed
-part of the environment, but opponents are not blind to the time control. A player facing someone
-with increment may play more patiently, or be more willing to grind out a long ending, than a
-player who knows both clocks are about to run out. That shift in opponent behaviour is itself a
-function of increment and is folded into the outcome without being separately identified from the
-mover's own time pressure.
+### Counterfactual
 
-**Switchers may choose increment based on how they expect to play that day.** This is the most
-serious one. Player fixed effects remove stable, between-player selection; they cannot remove
-day-to-day, within-player selection. A player who feels sharp, rested, or focused might be more
-likely to pick a faster time control precisely because they expect to need less thinking time that
-day -- inducing a spurious link between increment and blunder rate that has nothing to do with the
-clock itself, and that no amount of player-level fixed effects can absorb.
+Mechanically unchanged from the original design: extrapolates Set 5's regression-adjusted
+middlegame effect to "what if I shifted 20% of my opening time into the middlegame," using the
+empirical extra-seconds-per-move increment buys as the conversion bridge. On this player's data,
+that bridge (`bucket_time_diff` in `causal.py`, itself regression-adjusted for `base_time` for
+the same reason the main effect is -- an unadjusted version came out with the wrong sign entirely,
+since treatment/control differ so much in `base_time` composition) comes out to **+0.63
+seconds/move** in the middlegame bucket, below the 1-second reliability floor -- so the
+counterfactual is correctly reported as unavailable rather than as a number that looks precise
+but isn't (an earlier, un-adjusted version of this bridge produced a nonsense "+19 expected
+blunders," which is what surfaced the base_time-adjustment bug in the first place).
 
-The E-value puts a number on how strong a confounder matching any of these three stories would
-need to be to erase the estimate. A risk ratio in the 2-3 range is not an exotic magnitude for
-something like within-player day-to-day form or a systematic difference in position sharpness --
-it's entirely plausible that any one of the three threats above clears that bar on its own. This
-result is best read as suggestive of a real time-pressure effect on blunder rate, not as a
-demonstrated one, and that gap is the honest conclusion of this section.
+### LLM coaching narrative
 
-## Player report (`src/report.py`)
+Optional: if `ANTHROPIC_API_KEY` is set, `report.py` sends the ranked leak table and the causal
+finding to Claude and writes a short, direct, plain-English improvement plan to
+`outputs/coaching_narrative.md` -- addressed to the player, specific enough to act on this week,
+and honest about what's working as well as what isn't. If the key isn't set, this step is skipped
+and the numeric leak table/figure are unaffected.
 
-For any username with at least 200 moves in `data/processed/test.parquet` (deliberately
-test-only, all of `MONTH_B`: the model was trained on `MONTH_A`, so every row here is
-out-of-sample for it regardless of whether the player also appears in `MONTH_A`, which is what
-makes their individual calibration check meaningful rather than circular), `report.py` produces
-one figure with four panels:
+### Output
 
-1. **Blunder rate by clock decile** against a baseline of every other player in the same
-   100-Elo-point band, using decile edges drawn from the baseline's own clock distribution so
-   both curves are binned identically.
-2. **Individual calibration**: this player's moves scored by the fitted LightGBM model, binned by
-   predicted probability, predicted vs. observed -- the same kind of reliability check as Set 4's
-   calibration, but for one person instead of the whole test set.
-3. **Time allocation profile**: mean seconds spent per move by ply bucket, against the same
-   rating-matched baseline.
-4. **A counterfactual**, printed as text on the figure: applying the Step 5 middlegame DiD
-   estimate, what happens to this player's expected middlegame blunder count if they shifted 20%
-   of their opening time into the middlegame. The conversion from the DiD's blunder-rate effect to
-   a per-second rate uses the empirical extra seconds-per-move increment buys in that bucket
-   (`causal.py`'s pickled `bucket_time_diff`) as the bridge. This rests on three assumptions,
-   stated in the code and worth repeating here: the increment effect is treated as scaling
-   linearly with seconds available (an extrapolation -- the original estimate came from a fixed
-   per-move bonus compounding over a whole game, not a one-off reallocation), reducing opening
-   time is assumed not to raise opening blunder risk (justified by the placebo/parallel-trends
-   result: clock differences haven't yet mattered that early), and the player's own move counts
-   per bucket are held fixed. If the empirical seconds-per-move gap in the middlegame bucket is
-   too small (< 1 second) to divide by reliably, the counterfactual is reported as unavailable
-   for that player rather than as a number that looks precise but isn't.
+`outputs/tables/rating_leaks.csv`, `outputs/figures/player_report_gonzalopelotas.png`,
+`outputs/coaching_narrative.md` (if `ANTHROPIC_API_KEY` is set).
 
-Run with `python src/report.py <username>`. Output: `outputs/figures/player_report_{username}.png`
-plus the four panels' underlying tables printed to the console.
+## Running the pipeline
+
+Requires Stockfish on `PATH` (`winget install --id Stockfish.Stockfish -e` on Windows) and the
+packages in `requirements.txt`. No API token needed for ingestion (unlike the original
+HF-dataset design). In order:
+
+```
+python src/ingest.py     # pulls chess.com games -> data/raw/
+python src/parse.py      # Stockfish eval pass -> data/processed/moves_gonzalopelotas.parquet
+python src/features.py   # -> data/processed/features_gonzalopelotas.parquet
+python src/splits.py     # -> data/processed/{train,val,test}.parquet
+python src/evaluate.py   # fits + evaluates the model ladder -> outputs/
+python src/causal.py     # increment natural experiment -> outputs/
+python src/report.py     # rating-leak report -> outputs/ (set ANTHROPIC_API_KEY for the narrative)
+```
+
+`pytest tests/` covers `parse.py`'s off-by-one alignment logic via an injected fake evaluator, so
+it doesn't depend on the real Stockfish binary being installed.
