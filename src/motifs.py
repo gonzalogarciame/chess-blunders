@@ -40,7 +40,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from causal import PLY_BUCKET_LABELS
+from causal import PLY_BUCKET_EDGES, PLY_BUCKET_LABELS
 from features import PIECE_VALUES
 from parse import CP_CLAMP, MATE_CP, find_stockfish
 from report import find_leaks, load_test_set
@@ -346,7 +346,6 @@ def classify_blunder(
 
 
 def _bucket_for_ply(ply: int) -> str:
-    from causal import PLY_BUCKET_EDGES
     for label, lo, hi in zip(PLY_BUCKET_LABELS, PLY_BUCKET_EDGES[:-1], PLY_BUCKET_EDGES[1:]):
         if lo <= ply < hi:
             return label
