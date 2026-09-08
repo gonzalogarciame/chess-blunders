@@ -1,7 +1,42 @@
 # Chess Rating Leaks & Blunder Coach
 
+[![tests](https://github.com/gonzalogarciame/chess-rating-and-blunders-coach/actions/workflows/tests.yml/badge.svg)](https://github.com/gonzalogarciame/chess-rating-and-blunders-coach/actions/workflows/tests.yml)
+![python](https://img.shields.io/badge/python-3.12-blue)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A personal analytics pipeline over my own chess.com games (`gonzalopelotas`): where I actually
-lose rating points, whether time pressure causes it, and what to do about it.
+lose rating points, whether time pressure causes it, and what to do about it — ending in an
+interactive trainer built from my own real blunders.
+
+<p align="center">
+  <a href="https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6">
+    <img src="docs/trainer-solved.png" alt="The blunder trainer: a position from a real game with the missed move revealed as an annotated variation" width="100%">
+  </a><br>
+  <sub><b><a href="https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6">▶ Open the live trainer</a></b> · 300 of my own blunders, grouped by mistake pattern, played back against the real games</sub>
+</p>
+
+### What this project demonstrates
+
+- **An end-to-end ML pipeline** — ingestion → engine labelling → leakage-safe features → a
+  model ladder → calibrated evaluation → reporting, each stage a small, separately testable
+  module.
+- **Causal inference, reported honestly** — a difference-in-differences natural experiment
+  (does playing with a clock increment actually reduce blunders?) with a balance table, a
+  placebo test, parallel-trends checks, an E-value sensitivity analysis, and a written account
+  of exactly why the single-player design is weaker than the population one it started as.
+- **Leakage discipline** — every model feature is provably computable *before* the move is
+  played; `features.py` asserts it at build time rather than trusting code review.
+- **Working with a real, awkward API** — chess.com's public API exposes no engine eval and
+  omits `+0` increment notation; the pipeline generates eval with a local multiprocessed
+  Stockfish and absorbs the format quirks.
+- **Turning analysis into a product** — the 300 costliest blunders are auto-classified into
+  mistake patterns (MultiPV re-analysis) and shipped as a single dependency-light HTML
+  trainer you can actually solve.
+- **Tests + CI** — a pytest suite that injects fake engines, so it runs in GitHub Actions
+  with no Stockfish binary.
+
+**Stack:** Python · pandas · LightGBM · scikit-learn · statsmodels · python-chess + Stockfish ·
+matplotlib · a hand-built vanilla-JS / SVG front end · pytest + GitHub Actions
 
 **[Jump to: Key findings](#at-a-glance) · [Scope](#scope) · [Data](#data-srcingestpy) ·
 [Parsing/eval](#move-level-parsing-and-labelling-srcparsepy) ·
@@ -434,9 +469,15 @@ ask for it. Puzzles are grouped by motif with per-group progress; solved/attempt
 kept per-device in `localStorage`. The page loads only `chess.js` (move legality) from a CDN;
 the board, the Cburnett piece set (vendored under `src/assets/cburnett/`, inlined as SVG
 `<symbol>`s) and all puzzle data ship in the file -- so it publishes cleanly as an Artifact and
-also opens as a local file.
+also opens as a local file. The look leans on print chess annotation (Informator `!` / `?!` /
+`??` marks, variations set with a left rule, figurine notation in monospace) rather than a
+dashboard.
 
-**Live trainer: https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6**
+<p align="center">
+  <img src="docs/trainer-puzzle.png" alt="The trainer showing an unsolved position: a chess diagram, the side to move, and the game facts as a plain list" width="100%">
+</p>
+
+**▶ Live trainer: <https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6>**
 
 Output: `outputs/trainer/blunder_trainer.html`.
 
@@ -458,6 +499,20 @@ python src/motifs.py     # MultiPV re-analysis of leak-category blunders -> data
 python src/trainer.py    # -> outputs/trainer/blunder_trainer.html  (then publish it as an Artifact)
 ```
 
-`pytest tests/` covers `parse.py`'s off-by-one alignment logic and `motifs.py`'s blunder
-classification, both via injected fake evaluators, so the suite doesn't depend on the real
-Stockfish binary being installed.
+`pytest tests/` covers `parse.py`'s off-by-one alignment logic, `motifs.py`'s blunder
+classification, and `trainer.py`'s page assembly -- all via injected fakes, so the suite
+doesn't depend on the real Stockfish binary and runs unchanged in CI
+([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+
+### Repo layout
+
+```
+src/ingest.py parse.py features.py splits.py   data pipeline: pull -> label -> features -> split
+src/evaluate.py                                model ladder + calibration + slice metrics
+src/causal.py                                  the increment difference-in-differences study
+src/report.py                                  ranked rating-leak table + LLM coaching note
+src/motifs.py trainer.py                       classify blunders by motif -> build the trainer
+src/assets/cburnett/                           vendored chess piece SVGs (BSD), inlined by trainer.py
+tests/                                         pytest, no engine needed
+outputs/                                       generated figures, tables, and the trainer HTML
+```
