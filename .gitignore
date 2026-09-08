@@ -1,6 +1,7 @@
 data/raw/
 data/processed/
 outputs/tables/
+outputs/trainer/
 outputs/coaching_narrative.md
 .claude/
 __pycache__/
