@@ -12,8 +12,9 @@ time.
 
 The page is written as an Artifact-ready fragment (starts at <title>, no <html>/<head>/<body>
 wrapper). It loads only chess.js (move legality) from cdnjs; the board, the Cburnett piece
-set (vendored under src/assets/cburnett/, inlined as <symbol>s), and all puzzle data ship in
-the file. Progress is kept per-device in localStorage.
+set (vendored under src/assets/cburnett/, inlined as <symbol>s) and all puzzle data ship in
+the file. Progress is kept per-device in localStorage. The look is deliberately plain -- print
+chess annotation and a one-engineer analysis tool, not a dashboard.
 """
 
 import io
@@ -161,252 +162,241 @@ def main() -> None:
 
 _TEMPLATE = r"""<title>Blunder Trainer</title>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
   :root {
-    --bg: #eceef0;
-    --surface: #ffffff;
-    --surface-2: #f3f6f5;
-    --ink: #1a1f1d;
-    --ink-soft: #55605b;
-    --ink-faint: #8a938f;
-    --line: #d7ddda;
-    --accent: #2f7d63;
-    --accent-ink: #1c5344;
-    --solved: #2f7d63;
-    --missed: #bb4632;
-    --retry: #b9852b;
-    --move-hi: #e6c15a;
-    --sq-light: #e3e7e2;
-    --sq-dark: #6e9184;
-    --shadow: 0 1px 2px rgba(20, 35, 30, .05), 0 8px 26px rgba(20, 35, 30, .08);
+    --paper: #ecebe5;
+    --paper-2: #e3e2da;
+    --ink: #1e1f1b;
+    --ink-2: #5b5d54;
+    --ink-3: #8c8e83;
+    --rule: #ccccc1;
+    --accent: #2f6a55;
+    --accent-2: #234f3d;
+    --warn: #8f5f27;
+    --bad: #97402a;
+    --sq-l: #e7e2d3;
+    --sq-d: #6d8a7c;
+    --frame: #3f4a44;
   }
   :root:not([data-theme="light"]) { color-scheme: light dark; }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #111513; --surface: #191f1c; --surface-2: #202722;
-      --ink: #e7ebe8; --ink-soft: #a2aca7; --ink-faint: #6e7a75; --line: #2c3531;
-      --accent: #5cbf9f; --accent-ink: #93dcc5;
-      --solved: #5cbf9f; --missed: #e0715a; --retry: #d7a24e; --move-hi: #c99f3f;
-      --sq-light: #a9b7b0; --sq-dark: #47635a;
-      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 34px rgba(0, 0, 0, .4);
+      --paper: #1a1b16; --paper-2: #222319; --ink: #e8e7dd; --ink-2: #a1a297;
+      --ink-3: #737567; --rule: #363730; --accent: #74b199; --accent-2: #90c7b2;
+      --warn: #cb9659; --bad: #d27658; --sq-l: #aeaa99; --sq-d: #476055; --frame: #5b665f;
     }
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #111513; --surface: #191f1c; --surface-2: #202722;
-    --ink: #e7ebe8; --ink-soft: #a2aca7; --ink-faint: #6e7a75; --line: #2c3531;
-    --accent: #5cbf9f; --accent-ink: #93dcc5;
-    --solved: #5cbf9f; --missed: #e0715a; --retry: #d7a24e; --move-hi: #c99f3f;
-    --sq-light: #a9b7b0; --sq-dark: #47635a;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 34px rgba(0, 0, 0, .4);
+    --paper: #1a1b16; --paper-2: #222319; --ink: #e8e7dd; --ink-2: #a1a297;
+    --ink-3: #737567; --rule: #363730; --accent: #74b199; --accent-2: #90c7b2;
+    --warn: #cb9659; --bad: #d27658; --sq-l: #aeaa99; --sq-d: #476055; --frame: #5b665f;
   }
 
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
-    line-height: 1.5; -webkit-font-smoothing: antialiased;
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: "Spectral", Georgia, "Times New Roman", serif;
+    font-size: 15px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
   }
-  h1, h2, h3 { font-family: "Fraunces", Georgia, serif; font-weight: 600; margin: 0; text-wrap: balance; }
-  a { color: var(--accent-ink); }
-  button {
-    font: inherit; cursor: pointer; border: 1px solid var(--line);
-    background: var(--surface); color: var(--ink); border-radius: 8px;
-    padding: 8px 14px; transition: border-color .15s, background .15s, color .15s;
-  }
-  button:hover { border-color: var(--accent); }
-  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .primary { border-color: var(--accent); background: var(--accent); color: #fff; }
-  .primary:hover { filter: brightness(1.06); border-color: var(--accent); }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace; }
+  a { color: var(--accent-2); text-underline-offset: 2px; }
 
-  .app { max-width: 1200px; margin: 0 auto; padding: 24px clamp(12px, 3vw, 32px) 64px; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 26px clamp(14px, 4vw, 40px) 72px; }
 
-  .topbar {
-    display: flex; align-items: flex-end; justify-content: space-between;
-    flex-wrap: wrap; gap: 14px; padding-bottom: 18px; border-bottom: 1px solid var(--line);
+  /* masthead ------------------------------------------------------------- */
+  .mast { display: flex; align-items: baseline; justify-content: space-between; gap: 16px 24px; flex-wrap: wrap; }
+  .mast .title { display: flex; align-items: baseline; gap: 10px; }
+  .mast .knight { width: 19px; height: 19px; align-self: center; opacity: .82; }
+  .mast h1 { margin: 0; font-weight: 600; font-size: 25px; letter-spacing: .01em; }
+  .mast .who {
+    font-family: "IBM Plex Mono", monospace; font-size: 11.5px; letter-spacing: .02em;
+    color: var(--ink-2); text-transform: uppercase;
   }
-  .brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-  .brand .mark { width: 30px; height: 30px; align-self: center; }
-  .brand h1 { font-size: clamp(22px, 3.4vw, 30px); letter-spacing: -.01em; }
-  .brand .sub { margin: 0; color: var(--ink-soft); font-size: 13.5px; flex-basis: 100%; }
-  .scorebox { display: flex; align-items: center; gap: 14px; }
-  .scorebox .tally { font-family: "IBM Plex Mono", monospace; font-size: 15px; color: var(--ink-soft); }
-  .scorebox .tally b { color: var(--ink); font-weight: 500; }
+  .mast .score { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--ink-2); }
+  .mast .score b { color: var(--ink); font-weight: 600; }
+  .mast .score .reset {
+    background: none; border: 0; padding: 0 0 0 12px; margin-left: 10px; cursor: pointer;
+    font: inherit; color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px;
+    border-left: 1px solid var(--rule);
+  }
+  .mast .score .reset:hover { color: var(--ink); }
+  .rule { height: 1px; background: var(--rule); margin: 14px 0 0; }
 
-  .body { display: grid; grid-template-columns: 250px 1fr; gap: 24px; margin-top: 22px; }
-  @media (max-width: 900px) { .body { grid-template-columns: 1fr; } }
+  /* layout -------------------------------------------------------------- */
+  .cols { display: grid; grid-template-columns: 186px 1fr; gap: 34px; margin-top: 26px; }
+  @media (max-width: 860px) { .cols { grid-template-columns: 1fr; gap: 20px; } }
 
-  .rail { display: flex; flex-direction: column; gap: 6px; align-content: start; }
-  @media (max-width: 900px) {
-    .rail { flex-direction: row; overflow-x: auto; padding-bottom: 6px; }
-    .rail .group { min-width: 194px; flex: 0 0 auto; }
-    .rail h2 { display: none; }
+  .index .lbl {
+    font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--ink-3); margin-bottom: 8px;
   }
-  .rail h2 {
-    font-size: 12px; text-transform: uppercase; letter-spacing: .09em; color: var(--ink-faint);
-    font-family: "IBM Plex Sans", sans-serif; font-weight: 600; margin: 2px 4px 6px;
+  @media (max-width: 860px) {
+    .index { overflow-x: auto; }
+    .index .grps { display: flex; gap: 0; }
+    .index .grp { flex: 0 0 auto; border-bottom: 0; border-right: 1px solid var(--rule); padding: 4px 14px 4px 0; margin-right: 14px; }
+    .index .grp[aria-current="true"] { box-shadow: none; }
   }
-  .group {
-    text-align: left; border: 1px solid var(--line); border-radius: 10px;
-    padding: 10px 12px; display: grid; gap: 7px; background: var(--surface);
+  .grp {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px; width: 100%;
+    background: none; border: 0; border-bottom: 1px solid var(--rule);
+    padding: 6px 0 6px 10px; margin: 0; cursor: pointer; text-align: left; color: var(--ink-2);
+    font-family: inherit; font-size: 13.5px; line-height: 1.3;
   }
-  .group[aria-current="true"] { border-color: var(--accent); background: var(--surface-2); }
-  .group .g-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .group .g-name { font-weight: 500; font-size: 13.5px; }
-  .group .g-count { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-faint); white-space: nowrap; }
-  .meter { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
-  .meter > i { display: block; height: 100%; background: var(--solved); width: 0; transition: width .3s; }
+  .grp:hover { color: var(--ink); }
+  .grp[aria-current="true"] { color: var(--ink); box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }
+  .grp .n { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+  .grp[aria-current="true"] .n { color: var(--ink-2); }
 
-  .stage { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-  .puzzle {
-    display: grid; grid-template-columns: auto 1fr; gap: 26px;
-    background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
-    padding: 22px; box-shadow: var(--shadow);
-  }
-  @media (max-width: 760px) { .puzzle { grid-template-columns: 1fr; gap: 18px; } }
+  .main { min-width: 0; }
+  .work { display: grid; grid-template-columns: auto 1fr; gap: 30px; }
+  @media (max-width: 720px) { .work { grid-template-columns: 1fr; gap: 20px; } }
 
-  .board-wrap { position: relative; width: min(72vw, 496px); aspect-ratio: 1; align-self: start; }
-  @media (max-width: 760px) { .board-wrap { width: 100%; max-width: 460px; margin: 0 auto; } }
+  /* board ------------------------------------------------------------- */
+  .board-wrap { position: relative; width: min(62vw, 432px); aspect-ratio: 1; align-self: start; }
+  @media (max-width: 720px) { .board-wrap { width: 100%; max-width: 440px; } }
   .board {
-    position: absolute; inset: 0;
-    display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
-    border-radius: 7px; overflow: hidden; border: 1px solid var(--line); user-select: none;
+    position: absolute; inset: 0; display: grid;
+    grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+    border: 1px solid var(--frame); user-select: none;
   }
-  .board.locked { cursor: default; }
   .sq { position: relative; display: flex; align-items: center; justify-content: center; }
-  .sq.l { background: var(--sq-light); }
-  .sq.d { background: var(--sq-dark); }
+  .sq.l { background: var(--sq-l); }
+  .sq.d { background: var(--sq-d); }
   .sq .coord {
-    position: absolute; font-size: 9.5px; font-family: "IBM Plex Mono", monospace;
-    font-weight: 500; opacity: .5;
+    position: absolute; font-family: "IBM Plex Mono", monospace; font-size: 9px;
+    font-weight: 500; opacity: .55;
   }
-  .sq.l .coord { color: #46554e; }
-  .sq.d .coord { color: #eef2ef; }
-  .sq .coord.f { right: 3px; bottom: 1px; }
-  .sq .coord.r { left: 3px; top: 1px; }
-  .sq.sel { box-shadow: inset 0 0 0 4px var(--accent); }
-  .sq.hi { box-shadow: inset 0 0 0 4px var(--move-hi); }
-  .sq.bad { box-shadow: inset 0 0 0 4px var(--missed); }
+  .sq.l .coord { color: #4a564e; }
+  .sq.d .coord { color: #edefe8; }
+  .sq .coord.f { right: 2.5px; bottom: 0.5px; }
+  .sq .coord.r { left: 2.5px; top: 0.5px; }
+  .sq.sel { box-shadow: inset 0 0 0 3px var(--accent); }
+  .sq.hi { box-shadow: inset 0 0 0 3px var(--warn); }
+  .sq.bad { box-shadow: inset 0 0 0 3px var(--bad); }
   .sq.target::before {
-    content: ""; position: absolute; width: 30%; height: 30%; border-radius: 50%;
-    background: var(--accent); opacity: .45;
+    content: ""; position: absolute; width: 26%; height: 26%; border-radius: 50%;
+    background: currentColor; color: var(--frame); opacity: .32;
   }
   .sq.target.cap::before {
-    width: 84%; height: 84%; background: transparent;
-    border: 4px solid var(--accent); opacity: .5;
+    width: 86%; height: 86%; background: none; border: 3px solid var(--frame); opacity: .3;
   }
-  .pc {
-    width: 92%; height: 92%; position: relative; z-index: 1; pointer-events: none;
-    filter: drop-shadow(0 1.5px 1.5px rgba(0, 0, 0, .32));
-  }
+  .pc { width: 90%; height: 90%; position: relative; z-index: 1; pointer-events: none; }
   .board-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
-  #overlay line { stroke: var(--move-hi); }
-  #overlay marker path { fill: var(--move-hi); }
+  #overlay line { stroke: var(--warn); }
+  #overlay marker path { fill: var(--warn); }
 
-  .panel { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-  .prompt { font-family: "Fraunces", Georgia, serif; font-size: 18px; line-height: 1.4; }
-  .prompt .side {
-    display: inline-flex; align-items: center; gap: 6px; color: var(--accent-ink); font-weight: 600;
+  /* analysis column ------------------------------------------------- */
+  .analysis { display: flex; flex-direction: column; gap: 15px; min-width: 0; font-size: 14.5px; }
+  .ask { line-height: 1.5; }
+  .ask .stm {
+    display: inline-block; width: 10px; height: 10px; margin-right: 7px; vertical-align: 1px;
+    border: 1.5px solid var(--ink); background: var(--paper);
   }
-  .prompt .side::before {
-    content: ""; width: 12px; height: 12px; border-radius: 50%;
-    background: var(--dot, #fff); border: 1px solid var(--ink-faint);
+  .ask.black .stm { background: var(--ink); }
+
+  .note-block {
+    border-left: 2px solid var(--rule); padding: 1px 0 1px 13px;
+    display: flex; flex-direction: column; gap: 7px; font-size: 13.5px;
   }
-  .prompt.black .side { --dot: #1c211f; }
-
-  .feedback {
-    border-radius: 11px; padding: 13px 14px; border: 1px solid var(--line);
-    background: var(--surface-2); font-size: 13.5px; display: grid; gap: 9px;
+  .note-block[data-kind="solved"] { border-color: var(--accent); }
+  .note-block[data-kind="revealed"] { border-color: var(--bad); }
+  .note-block[data-kind="retry"] { border-color: var(--warn); }
+  .note-block .head { font-weight: 600; }
+  .note-block[data-kind="solved"] .head { color: var(--accent-2); }
+  .note-block[data-kind="revealed"] .head { color: var(--bad); }
+  .note-block[data-kind="retry"] .head { color: var(--warn); }
+  .note-block .head .mv { font-family: "IBM Plex Mono", monospace; }
+  .note-block .var {
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; line-height: 1.6;
+    color: var(--ink-2); overflow-x: auto; white-space: pre-wrap;
   }
-  .feedback[data-kind="solved"] { border-color: var(--solved); }
-  .feedback[data-kind="revealed"] { border-color: var(--missed); }
-  .feedback[data-kind="retry"] { border-color: var(--retry); }
-  .feedback .verdict { font-weight: 600; }
-  .feedback[data-kind="solved"] .verdict { color: var(--solved); }
-  .feedback[data-kind="revealed"] .verdict { color: var(--missed); }
-  .feedback[data-kind="retry"] .verdict { color: var(--retry); }
-  .feedback .lines {
-    font-family: "IBM Plex Mono", monospace; font-size: 12px; display: grid; gap: 3px;
-    color: var(--ink-soft); overflow-x: auto;
+  .note-block .var b { color: var(--ink); font-weight: 600; }
+  .note-block .aside { color: var(--ink-3); font-size: 12.5px; }
+
+  .btns { display: flex; flex-wrap: wrap; gap: 7px; }
+  .btns button {
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; cursor: pointer;
+    background: none; color: var(--ink-2); border: 1px solid var(--rule);
+    padding: 5px 10px; border-radius: 1px;
   }
-  .feedback .lines b { color: var(--ink); font-weight: 500; }
-  .feedback .note { color: var(--ink-faint); }
+  .btns button:hover { border-color: var(--ink-2); color: var(--ink); }
+  .btns button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .btns .go { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .btns .go:hover { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
 
-  .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+  .facts { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 16px; font-size: 12.5px; }
+  .facts dt { color: var(--ink-3); }
+  .facts dd { margin: 0; font-family: "IBM Plex Mono", monospace; color: var(--ink); }
+  .facts .tags { grid-column: 1 / -1; margin-top: 5px; color: var(--ink-3); font-family: "IBM Plex Mono", monospace; font-size: 11px; }
 
-  .meta { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: 12.5px; }
-  .meta dt { color: var(--ink-faint); }
-  .meta dd { margin: 0; font-family: "IBM Plex Mono", monospace; }
-  .meta .tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
-  .meta .tags span {
-    font-family: "IBM Plex Sans", sans-serif; font-size: 11px; border: 1px solid var(--line);
-    border-radius: 999px; padding: 1px 8px; color: var(--ink-soft);
+  .replay { font-size: 12.5px; align-self: start; }
+  .replay a { color: var(--ink-2); }
+  .replay a:hover { color: var(--accent-2); }
+
+  .foot {
+    margin-top: 26px; display: flex; align-items: baseline; gap: 14px;
+    font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--ink-3);
   }
+  .foot .bar { flex: 1; height: 2px; background: var(--rule); position: relative; }
+  .foot .bar > i { position: absolute; left: 0; top: 0; height: 100%; background: var(--accent); }
 
-  .gamelink {
-    font-size: 13px; text-decoration: none; border-bottom: 1px solid currentColor;
-    align-self: start; padding-bottom: 1px;
+  .empty { padding: 40px 4px; color: var(--ink-2); font-size: 14px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .foot .bar > i { transition: width .25s ease; }
   }
-  .gamelink:hover { color: var(--accent); }
-
-  .progress {
-    display: flex; align-items: center; gap: 12px; font-size: 12.5px; color: var(--ink-soft);
-    font-family: "IBM Plex Mono", monospace;
-  }
-  .progress .track { flex: 1; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
-  .progress .track > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
-
-  .empty { padding: 46px 20px; text-align: center; color: var(--ink-soft); }
-
-  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 
 <!--__PIECES__-->
 
-<div class="app">
-  <header class="topbar">
-    <div class="brand">
-      <svg class="mark" viewBox="0 0 45 45" aria-hidden="true"><use href="#pc-bn"></use></svg>
+<div class="wrap">
+  <header class="mast">
+    <div class="title">
+      <svg class="knight" viewBox="0 0 45 45" aria-hidden="true"><use href="#pc-bn"></use></svg>
       <h1>Blunder Trainer</h1>
-      <p class="sub">gonzalopelotas &middot; your own leak-category mistakes, one motif at a time</p>
+      <span class="who">gonzalopelotas</span>
     </div>
-    <div class="scorebox">
-      <span class="tally"><b id="solvedCount">0</b> / <span id="totalCount">0</span> solved</span>
-      <button id="resetBtn" type="button">Reset progress</button>
+    <div class="score">
+      <b id="solvedCount">0</b> / <span id="totalCount">0</span> solved
+      <button id="resetBtn" class="reset" type="button">reset</button>
     </div>
   </header>
+  <div class="rule"></div>
 
-  <div class="body">
-    <nav class="rail" id="rail" aria-label="Motif groups">
-      <h2>Motif groups</h2>
+  <div class="cols">
+    <nav class="index" id="rail" aria-label="Motif groups">
+      <div class="lbl">Mistake patterns</div>
+      <div class="grps" id="grps"></div>
     </nav>
 
-    <div class="stage">
-      <section class="puzzle" id="puzzle">
+    <div class="main">
+      <div class="work">
         <div class="board-wrap">
           <div class="board" id="board"></div>
           <svg class="board-overlay" id="overlay" viewBox="0 0 80 80" aria-hidden="true"></svg>
         </div>
-        <div class="panel">
-          <div class="prompt" id="prompt"></div>
-          <div class="feedback" id="feedback" hidden></div>
-          <div class="controls">
-            <button id="leadinBtn" type="button">Show the lead-up</button>
+        <div class="analysis">
+          <p class="ask" id="prompt"></p>
+          <div class="note-block" id="feedback" hidden></div>
+          <div class="btns">
+            <button id="leadinBtn" type="button">Lead-up</button>
             <button id="hintBtn" type="button" hidden>Hint</button>
             <button id="revealBtn" type="button">Show answer</button>
-            <button id="lineBtn" type="button" hidden>Step through the line</button>
+            <button id="lineBtn" type="button" hidden>Play the line</button>
             <button id="skipBtn" type="button">Skip</button>
-            <button id="nextBtn" class="primary" type="button" hidden>Next &rarr;</button>
+            <button id="nextBtn" class="go" type="button" hidden>Next &rarr;</button>
           </div>
-          <dl class="meta" id="meta"></dl>
-          <a class="gamelink" id="gameLink" target="_blank" rel="noopener">Replay this game on chess.com &#8599;</a>
+          <dl class="facts" id="meta"></dl>
+          <p class="replay"><a id="gameLink" target="_blank" rel="noopener">See the game on chess.com &#8599;</a></p>
         </div>
-      </section>
-      <div class="progress">
-        <div class="track"><i id="progressFill"></i></div>
+      </div>
+      <div class="foot">
         <span id="progressText"></span>
+        <span class="bar"><i id="progressFill"></i></span>
       </div>
     </div>
   </div>
@@ -432,7 +422,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
   };
 
   var el = {};
-  ["rail", "board", "overlay", "prompt", "feedback", "meta", "gameLink", "leadinBtn",
+  ["rail", "grps", "board", "overlay", "prompt", "feedback", "meta", "gameLink", "leadinBtn",
    "hintBtn", "revealBtn", "lineBtn", "skipBtn", "nextBtn", "solvedCount", "totalCount",
    "resetBtn", "progressFill", "progressText"].forEach(function (id) {
     el[id] = document.getElementById(id);
@@ -455,22 +445,19 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     };
   }
 
-  // ---- rail --------------------------------------------------------------
+  // ---- index -----------------------------------------------------------
   function renderRail() {
-    el.rail.querySelectorAll(".group").forEach(function (n) { n.remove(); });
+    el.grps.innerHTML = "";
     DATA.groups.forEach(function (g) {
       var s = groupStats(g.name);
       var btn = document.createElement("button");
-      btn.className = "group";
+      btn.className = "grp";
       btn.type = "button";
       btn.setAttribute("aria-current", state.group === g.name ? "true" : "false");
-      btn.innerHTML =
-        '<span class="g-top"><span class="g-name"></span>' +
-        '<span class="g-count">' + s.solved + '/' + s.total + '</span></span>' +
-        '<span class="meter"><i style="width:' + (s.total ? s.solved / s.total * 100 : 0) + '%"></i></span>';
-      btn.querySelector(".g-name").textContent = g.name;
+      btn.innerHTML = '<span class="nm"></span><span class="n">' + s.solved + " / " + s.total + "</span>";
+      btn.querySelector(".nm").textContent = g.name;
       btn.addEventListener("click", function () { selectGroup(g.name); });
-      el.rail.appendChild(btn);
+      el.grps.appendChild(btn);
     });
     el.solvedCount.textContent = DATA.puzzles.filter(function (p) { return rec(p.id).solved; }).length;
     el.totalCount.textContent = DATA.puzzles.length;
@@ -495,7 +482,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
 
   function showDone() {
     state.current = null;
-    el.board.innerHTML = '<div class="empty">Every puzzle in this group is solved.<br>Pick another group, or Reset progress to run them again.</div>';
+    el.board.innerHTML = '<div class="empty">Every puzzle in this group is solved. Pick another pattern on the left, or reset progress to run them again.</div>';
     el.overlay.innerHTML = "";
     el.prompt.textContent = "";
     el.feedback.hidden = true;
@@ -504,7 +491,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
       .forEach(function (k) { el[k].hidden = true; });
   }
 
-  // ---- board rendering --------------------------------------------------
+  // ---- board ---------------------------------------------------------
   function files(o) { return o === "white" ? "abcdefgh" : "hgfedcba"; }
   function ranks(o) { return o === "white" ? [8, 7, 6, 5, 4, 3, 2, 1] : [1, 2, 3, 4, 5, 6, 7, 8]; }
 
@@ -534,8 +521,8 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
         d.className = "sq " + (dark ? "d" : "l");
         if (highlights && highlights[sq]) d.className += " " + highlights[sq];
         d.dataset.square = sq;
-        if (fi === 0) d.insertAdjacentHTML("beforeend", '<span class="coord r">' + rr[ri] + '</span>');
-        if (ri === 7) d.insertAdjacentHTML("beforeend", '<span class="coord f">' + ff[fi] + '</span>');
+        if (fi === 0) d.insertAdjacentHTML("beforeend", '<span class="coord r">' + rr[ri] + "</span>");
+        if (ri === 7) d.insertAdjacentHTML("beforeend", '<span class="coord f">' + ff[fi] + "</span>");
         var pc = map[sq];
         if (pc) {
           d.insertAdjacentHTML("beforeend",
@@ -545,10 +532,9 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
         el.board.appendChild(d);
       }
     }
-    el.board.classList.toggle("locked", state.phase !== "solving");
   }
 
-  // ---- puzzle lifecycle ----------------------------------------------
+  // ---- puzzle lifecycle -------------------------------------------
   function startPuzzle(p) {
     state.phase = "solving";
     state.tries = 0;
@@ -560,15 +546,15 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     el.overlay.innerHTML = "";
 
     var black = p.orientation === "black";
-    el.prompt.className = "prompt" + (black ? " black" : "");
-    el.prompt.innerHTML = '<span class="side">' + (black ? "Black" : "White") +
-      ' to move</span> &mdash; you blundered here. Find the move you missed.';
+    el.prompt.className = "ask" + (black ? " black" : "");
+    el.prompt.innerHTML = '<span class="stm"></span>' + (black ? "Black" : "White") +
+      " to play. You went wrong here — find the move you missed.";
 
     el.feedback.hidden = true;
     el.gameLink.hidden = false;
     el.gameLink.href = p.meta.gameUrl;
     el.leadinBtn.hidden = !(p.leadIn && p.leadIn.length);
-    el.leadinBtn.textContent = "Show the lead-up";
+    el.leadinBtn.textContent = "Lead-up";
     el.hintBtn.hidden = true;
     el.revealBtn.hidden = false;
     el.lineBtn.hidden = true;
@@ -581,29 +567,27 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
   function renderMeta(p, revealed) {
     var m = p.meta;
     var rows = [
-      ["Your clock", m.clock + (m.increment ? " (+" + m.increment + ")" : "")],
-      ["Game phase", m.phase],
-      ["Win prob. lost", "~" + m.wpLoss + " pts"],
-      ["Date", m.date],
-      ["Opening", m.opening]
+      ["clock", m.clock + (m.increment ? " (+" + m.increment + ")" : "")],
+      ["phase", m.phase],
+      ["win% lost", "~" + m.wpLoss],
+      ["date", m.date],
+      ["opening", m.opening]
     ];
     if (revealed) {
-      rows.push(["What happened", m.advantage]);
-      if (m.material !== "positional") rows.push(["Material", m.material]);
-      rows.push(["Refutation", m.refutation]);
+      rows.push(["situation", m.advantage]);
+      if (m.material !== "positional") rows.push(["material", m.material]);
+      rows.push(["refutation", m.refutation]);
     }
     var html = rows.map(function (r) {
       return "<dt>" + r[0] + "</dt><dd>" + escapeHtml(r[1]) + "</dd>";
     }).join("");
     if (m.leakTags && m.leakTags.length) {
-      html += '<div class="tags">' + m.leakTags.map(function (t) {
-        return "<span>" + escapeHtml(t) + "</span>";
-      }).join("") + "</div>";
+      html += '<div class="tags">' + m.leakTags.map(escapeHtml).join(" &nbsp;·&nbsp; ") + "</div>";
     }
     el.meta.innerHTML = html;
   }
 
-  // ---- interaction ---------------------------------------------------
+  // ---- interaction ----------------------------------------------
   function onSquareClick(e) {
     if (!state.current || state.phase !== "solving") return;
     var sq = e.currentTarget.dataset.square;
@@ -665,9 +649,9 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     el.feedback.hidden = false;
     el.feedback.dataset.kind = "retry";
     el.feedback.innerHTML =
-      '<span class="verdict">' + escapeHtml(mv.san) + " &mdash; not the one" +
-        (wasPlayed ? " (that's the move you played in the game)" : "") + ".</span>" +
-      "<div>Keep looking, or use <b>Hint</b> / <b>Show answer</b>.</div>";
+      '<div class="head"><span class="mv">' + escapeHtml(mv.san) + (wasPlayed ? " ??" : " ?!") +
+        "</span> — not it" + (wasPlayed ? ", and it's what you played in the game" : "") + ".</div>" +
+      "<div class=\"aside\">Keep looking" + (state.tries >= 2 ? "" : ", or take a hint after another try") + ".</div>";
     if (state.tries >= 2) el.hintBtn.hidden = false;
   }
 
@@ -694,27 +678,26 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     drawArrow(p.acceptable[0]);
     renderMeta(p, true);
 
-    var best = p.acceptable.map(function (a) { return a.san; }).join(" or ");
+    var best = p.acceptable.map(function (a) { return a.san; }).join(" / ");
     var head = kind === "solved"
-      ? '<span class="verdict">&#10003; ' + escapeHtml(mv.san) + " &mdash; that's a top engine move.</span>"
-      : '<span class="verdict">The move: <b>' + escapeHtml(best) + "</b>.</span>";
+      ? '<div class="head"><span class="mv">' + escapeHtml(mv.san) + " !</span> — a top engine move.</div>"
+      : '<div class="head">The move was <span class="mv">' + escapeHtml(best) + " !</span></div>";
     var lines = p.topLines.map(function (l) {
-      return "<div><b>" + escapeHtml(l.eval) + "</b>&nbsp;&nbsp;" + escapeHtml(l.san) + "</div>";
+      return "<div><b>" + escapeHtml(l.eval) + "</b>   " + escapeHtml(l.san) + "</div>";
     }).join("");
     el.feedback.hidden = false;
     el.feedback.dataset.kind = kind;
     el.feedback.innerHTML = head +
-      "<div>Best line: <b>" + escapeHtml(p.bestLineSan) + "</b></div>" +
-      '<div class="lines">' + lines + "</div>" +
-      '<div class="note">In the game you played ' + escapeHtml(p.played.san) +
-        ", losing about " + p.meta.wpLoss + " points of win probability.</div>";
+      '<div class="var">' + lines + "</div>" +
+      '<div class="aside">You played <span class="mono">' + escapeHtml(p.played.san) +
+        " ??</span> here — about " + p.meta.wpLoss + " win% gone.</div>";
 
     el.leadinBtn.hidden = true;
     el.hintBtn.hidden = true;
     el.revealBtn.hidden = true;
     el.skipBtn.hidden = true;
     el.lineBtn.hidden = !(p.solutionFens && p.solutionFens.length > 2);
-    el.lineBtn.textContent = "Step through the line";
+    el.lineBtn.textContent = "Play the line";
     el.nextBtn.hidden = false;
     el.nextBtn.focus();
 
@@ -737,7 +720,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     var h = {}; h[a.from] = "hi"; h[a.to] = "hi"; return h;
   }
 
-  // ---- hint --------------------------------------------------------
+  // ---- hint ----------------------------------------------------
   el.hintBtn.addEventListener("click", function () {
     var p = state.current;
     if (!p || state.phase !== "solving") return;
@@ -748,11 +731,11 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     el.feedback.hidden = false;
     el.feedback.dataset.kind = "retry";
     el.feedback.innerHTML =
-      '<span class="verdict">Hint</span><div>Move your <b>' +
-      PIECE_NAME[occ.type] + "</b> from <b>" + a.from + "</b>.</div>";
+      '<div class="head">Hint</div><div class="aside">It’s a <b>' +
+      PIECE_NAME[occ.type] + "</b> move, from <span class=\"mono\">" + a.from + "</span>.</div>";
   });
 
-  // ---- solution line stepper --------------------------------------
+  // ---- solution line stepper ---------------------------------
   el.lineBtn.addEventListener("click", function () {
     var p = state.current;
     var fens = p.solutionFens || [];
@@ -764,14 +747,13 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     el.overlay.innerHTML = "";
     if (state.lineStep === 0) {
       drawArrow(p.acceptable[0]);
-      el.lineBtn.textContent = "Step through the line";
+      el.lineBtn.textContent = "Play the line";
     } else {
-      el.lineBtn.textContent = "Next (" + state.lineStep + "/" + (fens.length - 1) + ")  " +
-        (sans[state.lineStep - 1] || "");
+      el.lineBtn.textContent = sans[state.lineStep - 1] + "  (" + state.lineStep + "/" + (fens.length - 1) + ")";
     }
   });
 
-  // ---- solution arrow -------------------------------------------
+  // ---- arrow -------------------------------------------------
   function centre(square, orient) {
     var ff = files(orient), rr = ranks(orient);
     return { x: ff.indexOf(square[0]) * 10 + 5, y: rr.indexOf(+square[1]) * 10 + 5 };
@@ -781,13 +763,13 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     var o = state.current.orientation;
     var a = centre(move.from, o), b = centre(move.to, o);
     el.overlay.innerHTML =
-      '<defs><marker id="ah" markerWidth="4.5" markerHeight="4.5" refX="2.6" refY="2.25" orient="auto">' +
-      '<path d="M0,0 L4.5,2.25 L0,4.5 Z"></path></marker></defs>' +
+      '<defs><marker id="ah" markerWidth="3.6" markerHeight="3.6" refX="2.2" refY="1.8" orient="auto">' +
+      '<path d="M0,0 L3.6,1.8 L0,3.6 Z"></path></marker></defs>' +
       '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y +
-      '" stroke-width="2" stroke-linecap="round" marker-end="url(#ah)" opacity="0.85"></line>';
+      '" stroke-width="1.25" stroke-linecap="round" marker-end="url(#ah)" opacity="0.8"></line>';
   }
 
-  // ---- lead-up stepper -----------------------------------------
+  // ---- lead-up stepper -------------------------------------
   el.leadinBtn.addEventListener("click", function () {
     var p = state.current;
     if (!p || state.phase !== "solving" || !p.leadIn || !p.leadIn.length) return;
@@ -795,13 +777,12 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     if (state.leadStep >= p.leadIn.length) {
       state.leadStep = null;
       drawBoard(p.fen, p.orientation);
-      el.leadinBtn.textContent = "Show the lead-up";
+      el.leadinBtn.textContent = "Lead-up";
       return;
     }
     var step = p.leadIn[state.leadStep];
     drawBoard(step.fen, p.orientation);
-    el.leadinBtn.textContent =
-      "Lead-up " + (state.leadStep + 1) + "/" + p.leadIn.length + "  —  " + step.san;
+    el.leadinBtn.textContent = step.san + "  (" + (state.leadStep + 1) + "/" + p.leadIn.length + ")";
   });
 
   el.skipBtn.addEventListener("click", function () {
@@ -821,7 +802,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     if (!state.group) return;
     var s = groupStats(state.group);
     el.progressFill.style.width = (s.total ? s.solved / s.total * 100 : 0) + "%";
-    el.progressText.textContent = state.group + " — " + s.solved + " / " + s.total + " solved";
+    el.progressText.textContent = state.group + "  ·  " + s.solved + " of " + s.total;
   }
 
   function escapeHtml(s) {
@@ -830,7 +811,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     });
   }
 
-  // ---- boot -------------------------------------------------
+  // ---- boot -----------------------------------------------
   if (!DATA.puzzles.length) {
     el.board.innerHTML = '<div class="empty">No puzzles found. Run motifs.py then trainer.py.</div>';
     return;
