@@ -426,12 +426,15 @@ JSON, not parquet, because of the nested move lists), `outputs/tables/blunder_mo
 ### The trainer page (`src/trainer.py`)
 
 Builds one self-contained HTML page from that JSON plus the raw game movetext. Per blunder:
-step through the last few moves of lead-up, then find the move on the board; on any legal move
-it reveals whether you found a top engine move, the move you actually played, the top-3 engine
-lines, your clock at that moment, and a link to replay the whole game on chess.com. Puzzles
-are grouped by motif with per-group progress; solved/attempted state is kept per-device in
-`localStorage`. The page loads only `chess.js` (move legality) from a CDN -- board, pieces and
-all data ship inline -- so it publishes cleanly as an Artifact and also opens as a local file.
+step through the last few moves of lead-up, then try to find the move on the board. Wrong
+tries just say "not that one, try again" (with a hint after two); the answer -- the move you
+actually played, the top-3 engine lines, your clock at that moment, a link to replay the whole
+game on chess.com, and a step-through of the winning line -- is only shown once you find it or
+ask for it. Puzzles are grouped by motif with per-group progress; solved/attempted state is
+kept per-device in `localStorage`. The page loads only `chess.js` (move legality) from a CDN;
+the board, the Cburnett piece set (vendored under `src/assets/cburnett/`, inlined as SVG
+`<symbol>`s) and all puzzle data ship in the file -- so it publishes cleanly as an Artifact and
+also opens as a local file.
 
 **Live trainer: https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6**
 
