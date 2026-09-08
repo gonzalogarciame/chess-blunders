@@ -8,7 +8,8 @@ lose rating points, whether time pressure causes it, and what to do about it.
 [Features/splits](#features-and-splits-srcfeaturespy-srcsplitspy) ·
 [Models](#models-and-evaluation-srcmodelspy-srcevaluatepy) ·
 [Causal](#increment-as-a-natural-experiment-srccausalpy) ·
-[Rating-leak report](#rating-leak-report-srcreportpy) · [Running it](#running-the-pipeline)**
+[Rating-leak report](#rating-leak-report-srcreportpy) ·
+[Blunder trainer](#blunder-trainer-srcmotifspy-srctrainerpy) · [Running it](#running-the-pipeline)**
 
 ## At a glance
 
@@ -22,6 +23,10 @@ lose rating points, whether time pressure causes it, and what to do about it.
   exactly why, reported honestly rather than oversold.
 - **Biggest concrete leak: the 21-40 ply middlegame**, where over half of blunders hang material
   outright -- see the full ranked leak table below.
+- Those 300 leak-category blunders are re-analysed with MultiPV Stockfish, sorted into 9
+  mistake-pattern groups (hung a piece, missed a fork, back-rank, ...), and turned into an
+  interactive [blunder trainer](#blunder-trainer-srcmotifspy-srctrainerpy): replay the real
+  game, try to find the move you missed.
 
 <p align="center">
   <img src="outputs/figures/player_report_gonzalopelotas.png" alt="Rating-leak report: ranked leak bar chart, individual calibration curve, and time-management counterfactual" width="100%">
@@ -367,6 +372,71 @@ this step is skipped and the numeric leak table/figure are unaffected.
 `outputs/tables/rating_leaks.csv`, `outputs/figures/player_report_gonzalopelotas.png`,
 `outputs/coaching_narrative.md` (if `GROQ_API_KEY` or `ANTHROPIC_API_KEY` is set).
 
+## Blunder trainer (`src/motifs.py`, `src/trainer.py`)
+
+`report.py` says *which slices* leak rating points. This pair goes one level down: it takes
+every blunder that falls in one of those leak slices, works out *what kind of mistake* it was,
+groups them by pattern, and builds an interactive page to drill them against the real games.
+The point is that what's learnable is the motif, not the exact position -- two positions that
+look nothing alike but where you walked into a knight fork both times belong together.
+
+### Motif tagging (`src/motifs.py`)
+
+The **300** test-set blunders that land in a ranked leak slice are re-analysed with a local
+Stockfish at **MultiPV=3, depth 16** from the pre-move position, plus a depth-14 single-PV
+look at the position *after* the move actually played (for the refutation). From that, each
+blunder gets:
+
+- **`acceptable_moves`** -- every reply within 40 cp of the engine's best (mover POV). This is
+  what the trainer accepts as "you found it". Deliberately strict: with only 3 PVs a genuinely
+  fine 4th move can be marked "not best", so the trainer always shows the top-3 lines with
+  their evals on reveal, not just a verdict.
+- **`material_label`** -- most negative swing in the mover's own material over the first few
+  plies of the refutation: hung a queen / rook / piece, lost the exchange, dropped a pawn, or
+  none (positional).
+- **`refutation_type`** -- `allowed_mate`, `back_rank`, `fork` (the reply lands a piece
+  attacking two of the mover's pieces), `capture`, `check`, or `quiet`.
+- **`advantage_state`** -- from `wp_before`: threw away a winning position / lost from equal /
+  compounded a worse one.
+
+`motif_group` is the highest-priority tag present (`allowed_mate` > `back_rank` > `fork` >
+hung queen/rook/piece > lost exchange/pawn > positional):
+
+| motif group | n | mean win-% lost | were winning first |
+|---|---|---|---|
+| Hung a piece | 84 | 38 | 64% |
+| Positional slip (no material) | 67 | 31 | 55% |
+| Hung the queen | 38 | 50 | 66% |
+| Missed a fork | 36 | 40 | 56% |
+| Dropped a pawn | 32 | 36 | 59% |
+| Hung a rook | 23 | 38 | 57% |
+| Allowed forced mate | 14 | 54 | 50% |
+| Back-rank tactic | 4 | 45 | 50% |
+| Lost the exchange | 2 | 40 | 50% |
+
+**These are heuristics off a shallow line, not a tactics solver** -- they're for grouping, not
+for teaching tactics on their own; the module docstring says so too. Engine access is an
+injected callable (same pattern as `parse.py`), so `tests/test_motifs.py` runs the
+classification logic against a deterministic fake with no Stockfish binary.
+
+Output: `data/processed/blunder_motifs_gonzalopelotas.json` (nested per-blunder records --
+JSON, not parquet, because of the nested move lists), `outputs/tables/blunder_motifs.csv`
+(flattened, for eyeballing).
+
+### The trainer page (`src/trainer.py`)
+
+Builds one self-contained HTML page from that JSON plus the raw game movetext. Per blunder:
+step through the last few moves of lead-up, then find the move on the board; on any legal move
+it reveals whether you found a top engine move, the move you actually played, the top-3 engine
+lines, your clock at that moment, and a link to replay the whole game on chess.com. Puzzles
+are grouped by motif with per-group progress; solved/attempted state is kept per-device in
+`localStorage`. The page loads only `chess.js` (move legality) from a CDN -- board, pieces and
+all data ship inline -- so it publishes cleanly as an Artifact and also opens as a local file.
+
+**Live trainer: https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6**
+
+Output: `outputs/trainer/blunder_trainer.html`.
+
 ## Running the pipeline
 
 Requires Stockfish on `PATH` (`winget install --id Stockfish.Stockfish -e` on Windows) and the
@@ -381,7 +451,10 @@ python src/splits.py     # -> data/processed/{train,val,test}.parquet
 python src/evaluate.py   # fits + evaluates the model ladder -> outputs/
 python src/causal.py     # increment natural experiment -> outputs/
 python src/report.py     # rating-leak report -> outputs/ (set GROQ_API_KEY for the narrative)
+python src/motifs.py     # MultiPV re-analysis of leak-category blunders -> data/processed/blunder_motifs_gonzalopelotas.json
+python src/trainer.py    # -> outputs/trainer/blunder_trainer.html  (then publish it as an Artifact)
 ```
 
-`pytest tests/` covers `parse.py`'s off-by-one alignment logic via an injected fake evaluator, so
-it doesn't depend on the real Stockfish binary being installed.
+`pytest tests/` covers `parse.py`'s off-by-one alignment logic and `motifs.py`'s blunder
+classification, both via injected fake evaluators, so the suite doesn't depend on the real
+Stockfish binary being installed.
