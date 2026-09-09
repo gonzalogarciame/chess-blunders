@@ -9,6 +9,7 @@ from trainer import (  # noqa: E402
     PIECE_FILES,
     build_page,
     build_puzzle,
+    chess_js,
     fmt_clock,
     group_summary,
     lead_in,
@@ -53,6 +54,7 @@ def _rec(**kw):
         played={"uci": "f1e1", "san": "Re1", "from": "f1", "to": "e1", "promotion": None},
         best_line_san="Nc3 Bb7", best_line_fens=["fen0", "fen1", "fen2"],
         top_lines=[{"san": "Nc3 Bb7", "eval": "+1.2"}],
+        refutation_line_san="Re1 Nxe1 Kxe1", refutation_line_fens=["fen0", "fen1", "fen2", "fen3"],
     )
     base.update(kw)
     return base
@@ -65,6 +67,17 @@ def test_build_puzzle_shape_and_game_url():
     assert p["meta"]["clock"] == "1:35"
     assert p["meta"]["gameUrl"] == "https://www.chess.com/game/live/123"
     assert p["leadIn"] == []  # no movetext supplied
+    assert p["whyBest"] == "" and p["whyBlunder"] == ""  # no explanations supplied
+    assert p["refutationSan"] == "Re1 Nxe1 Kxe1"
+
+
+def test_build_puzzle_merges_explanations_by_id():
+    ex = {"123-21": {"why_best": "Nc3 keeps the extra piece.",
+                     "why_blunder": "Re1 drops it to Nxe1.", "source": "llm"}}
+    p = build_puzzle(_rec(), None, ex)
+    assert p["whyBest"] == "Nc3 keeps the extra piece."
+    assert p["whyBlunder"] == "Re1 drops it to Nxe1."
+    assert build_puzzle(_rec(ply=99), None, ex)["whyBest"] == ""  # id miss -> empty
 
 
 def test_group_summary_orders_by_the_fixed_priority():
@@ -83,3 +96,14 @@ def test_build_page_inlines_data_and_pieces_without_html_wrapper():
     assert "window.__TRAINER__ = " in page
     assert '<symbol id="pc-wk"' in page
     assert "/*__DATA__*/" not in page and "<!--__PIECES__-->" not in page
+
+
+def test_build_page_inlines_chess_js_with_no_cdn():
+    page = build_page([build_puzzle(_rec(), None)], [{"name": "Hung a piece", "count": 1}])
+    assert "<!--__CHESSJS__-->" not in page
+    assert "cdnjs.cloudflare.com" not in page and "<script src=" not in page
+    assert "var Chess=function" in page  # the vendored library, inline
+
+
+def test_chess_js_is_a_script_tag():
+    assert chess_js().startswith("<script>") and chess_js().rstrip().endswith("</script>")

@@ -11,10 +11,16 @@ to the real game on chess.com. Puzzles are grouped by motif so you drill one pat
 time.
 
 The page is written as an Artifact-ready fragment (starts at <title>, no <html>/<head>/<body>
-wrapper). It loads only chess.js (move legality) from cdnjs; the board, the Cburnett piece
-set (vendored under src/assets/cburnett/, inlined as <symbol>s) and all puzzle data ship in
-the file. Progress is kept per-device in localStorage. The look is deliberately plain -- print
-chess annotation and a one-engineer analysis tool, not a dashboard.
+wrapper) and ships every dependency inline: chess.js (move legality, vendored under
+src/assets/vendor/) and the Cburnett piece set (src/assets/cburnett/, inlined as <symbol>s),
+plus all puzzle data. No external network requests at all -- it opens straight from file://
+and hosts on any static server. If explain.py has been run, each puzzle also carries a short
+"why the engine move is best" / "why your move loses" note (see load_explanations). Progress
+is kept per-device in localStorage. The look is deliberately plain -- print chess annotation
+and a one-engineer analysis tool, not a dashboard.
+
+main() writes two identical copies: outputs/trainer/blunder_trainer.html (publish as an
+Artifact) and docs/trainer/index.html (served by GitHub Pages).
 """
 
 import io
@@ -33,7 +39,9 @@ PROJECT = Path(__file__).resolve().parent.parent
 PROCESSED_DIR = PROJECT / "data" / "processed"
 RAW_DIR = PROJECT / "data" / "raw"
 OUT_DIR = PROJECT / "outputs" / "trainer"
+PAGES_DIR = PROJECT / "docs" / "trainer"
 ASSETS = Path(__file__).resolve().parent / "assets" / "cburnett"
+CHESS_JS = Path(__file__).resolve().parent / "assets" / "vendor" / "chess.min.js"
 
 USERNAME = "gonzalopelotas"
 LEAD_IN_PLIES = 6
@@ -60,9 +68,26 @@ def load_motifs() -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_explanations() -> dict[str, dict]:
+    """explain.py's sidecar: id -> {why_best, why_blunder, source}. Optional -- the page just
+    omits the notes if it hasn't been run."""
+    path = PROCESSED_DIR / f"blunder_explanations_{USERNAME}.json"
+    if not path.exists():
+        print(f"note: {path.name} not found -- puzzles will have no why-notes "
+              "(run `python src/explain.py` to add them).")
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def game_movetext_lookup() -> dict[str, str]:
     g = pd.read_parquet(RAW_DIR / "games_gonzalopelotas.parquet")
     return dict(zip(g["game_id"].astype(str), g["movetext"]))
+
+
+def chess_js() -> str:
+    """The vendored chess.js, wrapped in a <script> tag -- inlined so the page needs no CDN."""
+    return "<script>/* chess.js 0.12.1 -- BSD-2-Clause, github.com/jhlywa/chess.js */\n" + \
+        CHESS_JS.read_text(encoding="utf-8") + "\n</script>"
 
 
 def piece_defs() -> str:
@@ -98,10 +123,12 @@ def fmt_clock(seconds: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
-def build_puzzle(rec: dict, movetext: str | None) -> dict:
+def build_puzzle(rec: dict, movetext: str | None, explanations: dict | None = None) -> dict:
     game_id = str(rec["game_id"])
+    pid = f"{game_id}-{rec['ply']}"
+    ex = (explanations or {}).get(pid, {})
     return {
-        "id": f"{game_id}-{rec['ply']}",
+        "id": pid,
         "group": rec["motif_group"],
         "fen": rec["fen_before"],
         "orientation": rec["mover_color"],
@@ -110,6 +137,10 @@ def build_puzzle(rec: dict, movetext: str | None) -> dict:
         "bestLineSan": rec["best_line_san"],
         "solutionFens": rec["best_line_fens"],
         "topLines": rec["top_lines"],
+        "refutationSan": rec.get("refutation_line_san", ""),
+        "refutationFens": rec.get("refutation_line_fens", []),
+        "whyBest": ex.get("why_best", ""),
+        "whyBlunder": ex.get("why_blunder", ""),
         "leadIn": lead_in(movetext, int(rec["ply"]), LEAD_IN_PLIES) if movetext else [],
         "meta": {
             "wpLoss": round(rec["wp_loss"]),
@@ -141,23 +172,29 @@ def build_page(puzzles: list[dict], groups: list[dict]) -> str:
     blob = json.dumps({"puzzles": puzzles, "groups": groups}, separators=(",", ":"))
     return (_TEMPLATE
             .replace("<!--__PIECES__-->", piece_defs())
+            .replace("<!--__CHESSJS__-->", chess_js())
             .replace("/*__DATA__*/", "window.__TRAINER__ = " + blob + ";"))
 
 
 def main() -> None:
     motifs = load_motifs()
     movetexts = game_movetext_lookup()
-    puzzles = [build_puzzle(r, movetexts.get(str(r["game_id"]))) for r in motifs]
+    explanations = load_explanations()
+    puzzles = [build_puzzle(r, movetexts.get(str(r["game_id"])), explanations) for r in motifs]
     groups = group_summary(puzzles)
+    page = build_page(puzzles, groups)
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = OUT_DIR / "blunder_trainer.html"
-    out_path.write_text(build_page(puzzles, groups), encoding="utf-8")
+    for out_dir, name in [(OUT_DIR, "blunder_trainer.html"), (PAGES_DIR, "index.html")]:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / name).write_text(page, encoding="utf-8")
 
-    print(f"wrote {out_path}  ({len(puzzles)} puzzles across {len(groups)} motif groups)")
+    n_explained = sum(1 for p in puzzles if p["whyBest"])
+    print(f"wrote {OUT_DIR / 'blunder_trainer.html'} and {PAGES_DIR / 'index.html'}  "
+          f"({len(puzzles)} puzzles across {len(groups)} motif groups, {n_explained} with why-notes)")
     for g in groups:
         print(f"  {g['name']:<32} {g['count']}")
-    print("\nnext: publish outputs/trainer/blunder_trainer.html as an Artifact.")
+    print("\nnext: commit docs/trainer/index.html (GitHub Pages) and re-publish "
+          "outputs/trainer/blunder_trainer.html as the claude.ai artifact.")
 
 
 _TEMPLATE = r"""<title>Blunder Trainer</title>
@@ -316,6 +353,14 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
   }
   .note-block .var b { color: var(--ink); font-weight: 600; }
   .note-block .aside { color: var(--ink-3); font-size: 12.5px; }
+  .note-block .why {
+    margin: 0; font-size: 13px; line-height: 1.5; color: var(--ink);
+  }
+  .note-block .why.bad { color: var(--ink-2); }
+  .note-block .why::before {
+    content: "▸ "; color: var(--accent); font-size: 11px;
+  }
+  .note-block .why.bad::before { content: "▸ "; color: var(--bad); }
 
   .btns { display: flex; flex-wrap: wrap; gap: 7px; }
   .btns button {
@@ -387,6 +432,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
             <button id="hintBtn" type="button" hidden>Hint</button>
             <button id="revealBtn" type="button">Show answer</button>
             <button id="lineBtn" type="button" hidden>Play the line</button>
+            <button id="punishBtn" type="button" hidden>Show the punishment</button>
             <button id="skipBtn" type="button">Skip</button>
             <button id="nextBtn" class="go" type="button" hidden>Next &rarr;</button>
           </div>
@@ -402,13 +448,13 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.1/chess.min.js"></script>
+<!--__CHESSJS__-->
 <script>
 /*__DATA__*/
 (function () {
   "use strict";
   var DATA = window.__TRAINER__ || { puzzles: [], groups: [] };
-  var HAS_CHESS = typeof Chess !== "undefined";  // chess.js from cdnjs; degrade gently if absent
+  var HAS_CHESS = typeof Chess !== "undefined";  // vendored chess.js; degrade gently if absent
   var STORE_KEY = "blunder-trainer-v1";
   var PIECE_NAME = { k: "king", q: "queen", r: "rook", b: "bishop", n: "knight", p: "pawn" };
 
@@ -418,13 +464,13 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
 
   var state = {
     group: null, queue: [], current: null,
-    selected: null, phase: "solving", tries: 0, leadStep: null, lineStep: 0
+    selected: null, phase: "solving", tries: 0, leadStep: null, lineStep: 0, punishStep: 0
   };
 
   var el = {};
   ["rail", "grps", "board", "overlay", "prompt", "feedback", "meta", "gameLink", "leadinBtn",
-   "hintBtn", "revealBtn", "lineBtn", "skipBtn", "nextBtn", "solvedCount", "totalCount",
-   "resetBtn", "progressFill", "progressText"].forEach(function (id) {
+   "hintBtn", "revealBtn", "lineBtn", "punishBtn", "skipBtn", "nextBtn", "solvedCount",
+   "totalCount", "resetBtn", "progressFill", "progressText"].forEach(function (id) {
     el[id] = document.getElementById(id);
   });
 
@@ -487,7 +533,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     el.prompt.textContent = "";
     el.feedback.hidden = true;
     el.meta.innerHTML = "";
-    ["gameLink", "leadinBtn", "hintBtn", "revealBtn", "lineBtn", "skipBtn", "nextBtn"]
+    ["gameLink", "leadinBtn", "hintBtn", "revealBtn", "lineBtn", "punishBtn", "skipBtn", "nextBtn"]
       .forEach(function (k) { el[k].hidden = true; });
   }
 
@@ -541,6 +587,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     state.selected = null;
     state.leadStep = null;
     state.lineStep = 0;
+    state.punishStep = 0;
 
     drawBoard(p.fen, p.orientation);
     el.overlay.innerHTML = "";
@@ -558,6 +605,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     el.hintBtn.hidden = true;
     el.revealBtn.hidden = false;
     el.lineBtn.hidden = true;
+    el.punishBtn.hidden = true;
     el.skipBtn.hidden = false;
     el.nextBtn.hidden = true;
 
@@ -646,11 +694,16 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     var r = rec(p.id); r.attempts += 1; putRec(p.id, r);
     markSquare(to, "bad");
     var wasPlayed = p.played.from === from && p.played.to === to;
+    // Playing your own game move is your worst try -- so it's fair to say why it loses right
+    // here, without giving away the move you should have found.
+    var whyBlunder = (wasPlayed && p.whyBlunder)
+      ? '<p class="why bad">' + escapeHtml(p.whyBlunder) + "</p>" : "";
     el.feedback.hidden = false;
     el.feedback.dataset.kind = "retry";
     el.feedback.innerHTML =
       '<div class="head"><span class="mv">' + escapeHtml(mv.san) + (wasPlayed ? " ??" : " ?!") +
         "</span> — not it" + (wasPlayed ? ", and it's what you played in the game" : "") + ".</div>" +
+      whyBlunder +
       "<div class=\"aside\">Keep looking" + (state.tries >= 2 ? "" : ", or take a hint after another try") + ".</div>";
     if (state.tries >= 2) el.hintBtn.hidden = false;
   }
@@ -673,6 +726,7 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     state.phase = "revealed";
     state.selected = null;
     state.lineStep = Math.min(1, (p.solutionFens || []).length - 1);
+    state.punishStep = 0;
 
     drawBoard(solutionFen(state.lineStep), p.orientation, arrowHighlights());
     drawArrow(p.acceptable[0]);
@@ -685,12 +739,14 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     var lines = p.topLines.map(function (l) {
       return "<div><b>" + escapeHtml(l.eval) + "</b>   " + escapeHtml(l.san) + "</div>";
     }).join("");
+    var whyBest = p.whyBest ? '<p class="why">' + escapeHtml(p.whyBest) + "</p>" : "";
+    var whyBlunder = p.whyBlunder ? '<p class="why bad">' + escapeHtml(p.whyBlunder) + "</p>" : "";
     el.feedback.hidden = false;
     el.feedback.dataset.kind = kind;
-    el.feedback.innerHTML = head +
+    el.feedback.innerHTML = head + whyBest +
       '<div class="var">' + lines + "</div>" +
       '<div class="aside">You played <span class="mono">' + escapeHtml(p.played.san) +
-        " ??</span> here — about " + p.meta.wpLoss + " win% gone.</div>";
+        " ??</span> here — about " + p.meta.wpLoss + " win% gone.</div>" + whyBlunder;
 
     el.leadinBtn.hidden = true;
     el.hintBtn.hidden = true;
@@ -698,6 +754,8 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     el.skipBtn.hidden = true;
     el.lineBtn.hidden = !(p.solutionFens && p.solutionFens.length > 2);
     el.lineBtn.textContent = "Play the line";
+    el.punishBtn.hidden = !(p.refutationFens && p.refutationFens.length > 1);
+    el.punishBtn.textContent = "Show the punishment";
     el.nextBtn.hidden = false;
     el.nextBtn.focus();
 
@@ -740,6 +798,8 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
     var p = state.current;
     var fens = p.solutionFens || [];
     var sans = (p.bestLineSan || "").split(/\s+/).filter(Boolean);
+    state.punishStep = 0;
+    el.punishBtn.textContent = "Show the punishment";
     state.lineStep += 1;
     if (state.lineStep >= fens.length) state.lineStep = 0;
     drawBoard(solutionFen(state.lineStep), p.orientation,
@@ -750,6 +810,27 @@ _TEMPLATE = r"""<title>Blunder Trainer</title>
       el.lineBtn.textContent = "Play the line";
     } else {
       el.lineBtn.textContent = sans[state.lineStep - 1] + "  (" + state.lineStep + "/" + (fens.length - 1) + ")";
+    }
+  });
+
+  // ---- refutation (punishment) stepper: the move you played, then how it's refuted -------
+  el.punishBtn.addEventListener("click", function () {
+    var p = state.current;
+    var fens = p.refutationFens || [];
+    var sans = (p.refutationSan || "").split(/\s+/).filter(Boolean);
+    if (fens.length < 2) return;
+    state.lineStep = 0;
+    state.punishStep += 1;
+    if (state.punishStep >= fens.length) state.punishStep = 0;
+    el.overlay.innerHTML = "";
+    el.lineBtn.textContent = "Play the line";
+    if (state.punishStep === 0) {
+      drawBoard(solutionFen(0), p.orientation, arrowHighlights());
+      drawArrow(p.acceptable[0]);
+      el.punishBtn.textContent = "Show the punishment";
+    } else {
+      drawBoard(fens[state.punishStep], p.orientation);
+      el.punishBtn.textContent = sans[state.punishStep - 1] + "  (" + state.punishStep + "/" + (fens.length - 1) + ")";
     }
   });
 
