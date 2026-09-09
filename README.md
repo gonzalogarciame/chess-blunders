@@ -9,10 +9,10 @@ lose rating points, whether time pressure causes it, and what to do about it —
 interactive trainer built from my own real blunders.
 
 <p align="center">
-  <a href="https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6">
+  <a href="https://gonzalogarciame.github.io/chess-rating-and-blunders-coach/trainer/">
     <img src="docs/trainer-solved.png" alt="The blunder trainer: a position from a real game with the missed move revealed as an annotated variation" width="100%">
   </a><br>
-  <sub><b><a href="https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6">▶ Open the live trainer</a></b> · 300 of my own blunders, grouped by mistake pattern, played back against the real games</sub>
+  <sub><b><a href="https://gonzalogarciame.github.io/chess-rating-and-blunders-coach/trainer/">▶ Open the live trainer</a></b> · 300 of my own blunders, grouped by mistake pattern, played back against the real games — each with a short "why the engine move wins / why my move loses" note. <a href="https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6">(also on claude.ai)</a></sub>
 </p>
 
 ### What this project demonstrates
@@ -30,8 +30,9 @@ interactive trainer built from my own real blunders.
   omits `+0` increment notation; the pipeline generates eval with a local multiprocessed
   Stockfish and absorbs the format quirks.
 - **Turning analysis into a product** — the 300 costliest blunders are auto-classified into
-  mistake patterns (MultiPV re-analysis) and shipped as a single dependency-light HTML
-  trainer you can actually solve.
+  mistake patterns (MultiPV re-analysis), each given a plain-English "why the engine move
+  wins / why my move loses" note (LLM, with a heuristic fallback), and shipped as a single
+  zero-dependency HTML trainer you can actually solve — hosted on GitHub Pages.
 - **Tests + CI** — a pytest suite that injects fake engines, so it runs in GitHub Actions
   with no Stockfish binary.
 
@@ -44,7 +45,7 @@ matplotlib · a hand-built vanilla-JS / SVG front end · pytest + GitHub Actions
 [Models](#models-and-evaluation-srcmodelspy-srcevaluatepy) ·
 [Causal](#increment-as-a-natural-experiment-srccausalpy) ·
 [Rating-leak report](#rating-leak-report-srcreportpy) ·
-[Blunder trainer](#blunder-trainer-srcmotifspy-srctrainerpy) · [Running it](#running-the-pipeline)**
+[Blunder trainer](#blunder-trainer-srcmotifspy-srcexplainpy-srctrainerpy) · [Running it](#running-the-pipeline)**
 
 ## At a glance
 
@@ -60,7 +61,7 @@ matplotlib · a hand-built vanilla-JS / SVG front end · pytest + GitHub Actions
   outright -- see the full ranked leak table below.
 - Those 300 leak-category blunders are re-analysed with MultiPV Stockfish, sorted into 9
   mistake-pattern groups (hung a piece, missed a fork, back-rank, ...), and turned into an
-  interactive [blunder trainer](#blunder-trainer-srcmotifspy-srctrainerpy): replay the real
+  interactive [blunder trainer](#blunder-trainer-srcmotifspy-srcexplainpy-srctrainerpy): replay the real
   game, try to find the move you missed.
 
 <p align="center">
@@ -407,7 +408,7 @@ this step is skipped and the numeric leak table/figure are unaffected.
 `outputs/tables/rating_leaks.csv`, `outputs/figures/player_report_gonzalopelotas.png`,
 `outputs/coaching_narrative.md` (if `GROQ_API_KEY` or `ANTHROPIC_API_KEY` is set).
 
-## Blunder trainer (`src/motifs.py`, `src/trainer.py`)
+## Blunder trainer (`src/motifs.py`, `src/explain.py`, `src/trainer.py`)
 
 `report.py` says *which slices* leak rating points. This pair goes one level down: it takes
 every blunder that falls in one of those leak slices, works out *what kind of mistake* it was,
@@ -431,6 +432,9 @@ blunder gets:
   none (positional).
 - **`refutation_type`** -- `allowed_mate`, `back_rank`, `fork` (the reply lands a piece
   attacking two of the mover's pieces), `capture`, `check`, or `quiet`.
+- **`refutation_line_san` / `refutation_line_fens`** -- the move actually played, then the
+  engine's best line against it, in SAN and as a FEN-per-ply list, so the trainer can step
+  through *the punishment* the same way it steps through the winning line.
 - **`advantage_state`** -- from `wp_before`: threw away a winning position / lost from equal /
   compounded a worse one.
 
@@ -439,15 +443,15 @@ hung queen/rook/piece > lost exchange/pawn > positional):
 
 | motif group | n | mean win-% lost | were winning first |
 |---|---|---|---|
-| Hung a piece | 84 | 38 | 64% |
-| Positional slip (no material) | 67 | 31 | 55% |
-| Hung the queen | 38 | 50 | 66% |
-| Missed a fork | 36 | 40 | 56% |
-| Dropped a pawn | 32 | 36 | 59% |
-| Hung a rook | 23 | 38 | 57% |
-| Allowed forced mate | 14 | 54 | 50% |
+| Hung a piece | 89 | 39 | 66% |
+| Positional slip (no material) | 63 | 31 | 57% |
+| Hung the queen | 35 | 50 | 66% |
+| Missed a fork | 37 | 40 | 54% |
+| Dropped a pawn | 31 | 34 | 58% |
+| Hung a rook | 24 | 41 | 54% |
+| Allowed forced mate | 15 | 50 | 40% |
 | Back-rank tactic | 4 | 45 | 50% |
-| Lost the exchange | 2 | 40 | 50% |
+| Lost the exchange | 2 | 39 | 50% |
 
 **These are heuristics off a shallow line, not a tactics solver** -- they're for grouping, not
 for teaching tactics on their own; the module docstring says so too. Engine access is an
@@ -458,18 +462,46 @@ Output: `data/processed/blunder_motifs_gonzalopelotas.json` (nested per-blunder 
 JSON, not parquet, because of the nested move lists), `outputs/tables/blunder_motifs.csv`
 (flattened, for eyeballing).
 
+### Move explanations (`src/explain.py`)
+
+`motifs.py` produces engine lines and tags; this step turns each puzzle into two sentences --
+**why the engine's move is best** and **why the move actually played loses** -- and writes
+them to a sidecar `data/processed/blunder_explanations_gonzalopelotas.json` that `trainer.py`
+merges in. Same pattern as `report.py`'s coaching narrative (shared plumbing in `src/llm.py`):
+
+- **LLM by default** -- the engine lines, the refutation and the tags go to Groq's free
+  `openai/gpt-oss-20b` (or Anthropic if that key is set instead) in JSON mode; the model
+  writes the prose. The sidecar is its own resume point -- a run keeps every entry that
+  already has an LLM note and (re)does the rest, saving every 10 puzzles. Groq's free tier
+  caps tokens *per day*, so the first run typically gets a few hundred done, trips a circuit
+  breaker on the daily-limit error, and finishes the remainder on heuristics; **re-run it the
+  next day** and it tops up the rest.
+- **Heuristic fallback** -- if no API key is set, or the daily cap is hit, or a call doesn't
+  return valid JSON, that puzzle's sentences are templated from the `refutation_type` /
+  `material_label` / `refutation_line_san` tags instead. Blunt, but always available and
+  unit-tested (`tests/test_explain.py`, injected fake LLM -- no network).
+
+Skipping this step entirely is fine too: the trainer just renders without the notes.
+
+Output: `data/processed/blunder_explanations_gonzalopelotas.json`.
+
 ### The trainer page (`src/trainer.py`)
 
-Builds one self-contained HTML page from that JSON plus the raw game movetext. Per blunder:
-step through the last few moves of lead-up, then try to find the move on the board. Wrong
-tries just say "not that one, try again" (with a hint after two); the answer -- the move you
-actually played, the top-3 engine lines, your clock at that moment, a link to replay the whole
-game on chess.com, and a step-through of the winning line -- is only shown once you find it or
-ask for it. Puzzles are grouped by motif with per-group progress; solved/attempted state is
-kept per-device in `localStorage`. The page loads only `chess.js` (move legality) from a CDN;
-the board, the Cburnett piece set (vendored under `src/assets/cburnett/`, inlined as SVG
-`<symbol>`s) and all puzzle data ship in the file -- so it publishes cleanly as an Artifact and
-also opens as a local file. The look leans on print chess annotation (Informator `!` / `?!` /
+Builds one self-contained HTML page from that JSON (plus the explanations sidecar and the raw
+game movetext). Per blunder: step through the last few moves of lead-up, then try to find the
+move on the board. Wrong tries just say "not that one, try again" (with a hint after two) --
+**except playing the exact move you played in the real game, which also tells you right there
+why it loses** (you've already found your worst move, so nothing's spoiled). The full answer
+-- the move played, the top-3 engine lines, the "why the engine move wins" note, your clock at
+the time, a link to replay the game on chess.com, a step-through of the winning line, and a
+**"show the punishment"** step-through of how your move gets refuted -- is shown once you solve
+it or ask.
+
+Puzzles are grouped by motif with per-group progress; solved/attempted state is kept
+per-device in `localStorage`. **Zero external requests**: `chess.js` (move legality, vendored
+under `src/assets/vendor/`), the Cburnett piece set (`src/assets/cburnett/`, inlined as SVG
+`<symbol>`s) and all puzzle data ship in the file -- it opens straight from `file://` and
+hosts on any static server. The look leans on print chess annotation (Informator `!` / `?!` /
 `??` marks, variations set with a left rule, figurine notation in monospace) rather than a
 dashboard.
 
@@ -477,9 +509,15 @@ dashboard.
   <img src="docs/trainer-puzzle.png" alt="The trainer showing an unsolved position: a chess diagram, the side to move, and the game facts as a plain list" width="100%">
 </p>
 
-**▶ Live trainer: <https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6>**
+`trainer.py` writes two identical copies -- `outputs/trainer/blunder_trainer.html` (published
+as the claude.ai artifact) and `docs/trainer/index.html` (served by **GitHub Pages** at the
+link below, the primary home; enable it once under Settings -> Pages -> branch `master`,
+folder `/docs`).
 
-Output: `outputs/trainer/blunder_trainer.html`.
+**▶ Live trainer: <https://gonzalogarciame.github.io/chess-rating-and-blunders-coach/trainer/>**
+(mirror: <https://claude.ai/code/artifact/8059200a-0b59-4682-a005-78f13df541d6>)
+
+Output: `outputs/trainer/blunder_trainer.html`, `docs/trainer/index.html`.
 
 ## Running the pipeline
 
@@ -496,12 +534,14 @@ python src/evaluate.py   # fits + evaluates the model ladder -> outputs/
 python src/causal.py     # increment natural experiment -> outputs/
 python src/report.py     # rating-leak report -> outputs/ (set GROQ_API_KEY for the narrative)
 python src/motifs.py     # MultiPV re-analysis of leak-category blunders -> data/processed/blunder_motifs_gonzalopelotas.json
-python src/trainer.py    # -> outputs/trainer/blunder_trainer.html  (then publish it as an Artifact)
+python src/explain.py    # per-puzzle "why best / why blunder" -> data/processed/blunder_explanations_gonzalopelotas.json  (LLM if GROQ_API_KEY/ANTHROPIC_API_KEY set, heuristic fallback otherwise)
+python src/trainer.py    # -> outputs/trainer/blunder_trainer.html + docs/trainer/index.html  (publish the first as an Artifact, commit the second for GitHub Pages)
 ```
 
 `pytest tests/` covers `parse.py`'s off-by-one alignment logic, `motifs.py`'s blunder
-classification, and `trainer.py`'s page assembly -- all via injected fakes, so the suite
-doesn't depend on the real Stockfish binary and runs unchanged in CI
+classification, `explain.py`'s heuristic templating + LLM-JSON handling, and `trainer.py`'s
+page assembly -- all via injected fakes, so the suite depends on neither the real Stockfish
+binary nor a network/API key and runs unchanged in CI
 ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
 
 ### Repo layout
@@ -510,9 +550,12 @@ doesn't depend on the real Stockfish binary and runs unchanged in CI
 src/ingest.py parse.py features.py splits.py   data pipeline: pull -> label -> features -> split
 src/evaluate.py                                model ladder + calibration + slice metrics
 src/causal.py                                  the increment difference-in-differences study
+src/llm.py                                     shared Groq/Anthropic client (report.py + explain.py)
 src/report.py                                  ranked rating-leak table + LLM coaching note
-src/motifs.py trainer.py                       classify blunders by motif -> build the trainer
+src/motifs.py explain.py trainer.py            classify blunders -> explain them -> build the trainer
 src/assets/cburnett/                           vendored chess piece SVGs (BSD), inlined by trainer.py
-tests/                                         pytest, no engine needed
+src/assets/vendor/                             vendored chess.js (BSD-2-Clause), inlined by trainer.py
+tests/                                         pytest, no engine or API key needed
 outputs/                                       generated figures, tables, and the trainer HTML
+docs/trainer/                                  the built trainer page, served by GitHub Pages
 ```
