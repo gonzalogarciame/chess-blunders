@@ -315,6 +315,16 @@ def classify_blunder(
     material_label = _material_label(swing)
     refutation = _refutation_type(fen_before, played, lines_after)
 
+    # The move actually played, then the engine's best line against it -- so the trainer can
+    # step through "the punishment" the same way it steps through the winning line.
+    played_san = board.san(played) if played in board.legal_moves else played.uci()
+    after_played = board.copy()
+    after_played.push(played)
+    refutation_line_san = " ".join(
+        [played_san, _line_sans(after_played.fen(), reply_pv, PV_PLIES)]
+    ).strip()
+    refutation_line_fens = _line_fens(fen_before, [played, *reply_pv], PV_PLIES + 1)
+
     tags = []
     if refutation in ("allowed_mate", "back_rank", "fork"):
         tags.append(refutation)
@@ -338,6 +348,8 @@ def classify_blunder(
         "material_swing": swing,
         "material_label": material_label,
         "refutation_type": refutation,
+        "refutation_line_san": refutation_line_san,
+        "refutation_line_fens": refutation_line_fens,
         "advantage_state": _advantage_state(wp_before),
         "phase": phase,
         "motif_key": motif_key,
@@ -411,7 +423,7 @@ def _flatten_for_csv(records: list[dict]) -> pd.DataFrame:
     df["top_lines"] = df["top_lines"].apply(lambda ls: " | ".join(f"{l['san']} ({l['eval']})" for l in ls))
     df["leak_tags"] = df["leak_tags"].apply("; ".join)
     df["played"] = df["played"].apply(lambda m: m["san"])
-    df = df.drop(columns=["best_line_fens"])
+    df = df.drop(columns=["best_line_fens", "refutation_line_fens"])
     return df
 
 

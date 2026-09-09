@@ -63,6 +63,11 @@ def test_hung_queen_is_tagged_from_the_material_swing():
     assert tags["motif_group"] == "Hung the queen"
     assert tags["advantage_state"] == "threw away a winning position"
     assert tags["phase"] == "middlegame"
+    # the "punishment" line: the move played, then the engine's refutation of it
+    assert tags["refutation_line_san"].split()[0] == "Qe6+"
+    assert "fxe6" in tags["refutation_line_san"]
+    assert len(tags["refutation_line_fens"]) >= 2
+    assert tags["refutation_line_fens"][0] == fen  # starts from the pre-move position
 
 
 def test_allowed_mate_wins_over_material_tag():
@@ -147,3 +152,4 @@ def test_analyse_one_wires_through_a_fake_analyzer():
     assert rec["motif_group"] == "Hung the queen"
     assert rec["played"]["san"] == "Qe6+"
     assert rec["side_to_move"] == "white"
+    assert rec["refutation_line_san"].startswith("Qe6+ fxe6")
